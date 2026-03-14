@@ -6,7 +6,8 @@ const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || "127.0.0.1";
 const ROOT_DIR = __dirname;
 const DATA_FILE = path.join(ROOT_DIR, "server-data.json");
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_BODY_BYTES = 20 * 1024 * 1024;
+const VOICE_WAVEFORM_POINTS_MAX = 128;
 const AVATAR_COLORS = [
     "#1369ff",
     "#00b8b0",
@@ -116,6 +117,10 @@ async function handleApiRequest(req, res, pathname) {
             }
             if (!chat.participants.includes(senderId)) {
                 sendJson(res, 403, { error: "Sender is not a chat participant" });
+                return;
+            }
+            if (Array.isArray(chat.blockedBy) && chat.blockedBy.includes(senderId)) {
+                sendJson(res, 403, { error: "Chat is blocked for sender" });
                 return;
             }
             if (!text && attachments.length === 0) {
@@ -488,6 +493,10 @@ function normalizeDatabase(raw) {
                 : [],
             pinned: Boolean(chat.pinned),
             muted: Boolean(chat.muted),
+            archived: Boolean(chat.archived),
+            blockedBy: uniqueArray(Array.isArray(chat.blockedBy) ? chat.blockedBy : [])
+                .map((userId) => safeString(userId, 120))
+                .filter(Boolean),
             unreadCount: Number(chat.unreadCount || 0),
             updatedAt: Number(chat.updatedAt || Date.now())
         }))
@@ -503,11 +512,52 @@ function sanitizeAttachments(input) {
     if (!Array.isArray(input)) {
         return [];
     }
-    return input.slice(0, 8).map((item, index) => ({
-        id: safeString(item && item.id, 120) || uid(`f${index}`),
-        name: safeString(item && item.name, 260) || "file",
-        size: Number((item && item.size) || 0)
-    }));
+    return input.slice(0, 8).map((item, index) => {
+        const id = safeString(item && item.id, 120) || uid(`f${index}`);
+        const name = safeString(item && item.name, 260) || "file";
+        const rawSize = Number((item && item.size) || 0);
+        const size = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : 0;
+        const kind = safeString(item && item.kind, 20) === "voice" ? "voice" : "file";
+        if (kind !== "voice") {
+            return { id, name, size };
+        }
+
+        const mimeType = safeString(item && item.mimeType, 80).toLowerCase();
+        let audioData = safeString(item && item.audioData, 1000000);
+        if (!audioData.startsWith("data:audio/")) {
+            audioData = "";
+        }
+        if (!audioData) {
+            return { id, name, size };
+        }
+        const rawDuration = Number((item && item.durationSec) || 0);
+        const durationSec = Number.isFinite(rawDuration)
+            ? Math.min(600, Math.max(0.001, rawDuration))
+            : 0.001;
+        const waveform = sanitizeVoiceWaveform(item && item.waveform);
+
+        return {
+            id,
+            kind: "voice",
+            name,
+            size,
+            mimeType: mimeType || "audio/webm",
+            durationSec,
+            audioData,
+            waveform
+        };
+    });
+}
+
+function sanitizeVoiceWaveform(input) {
+    if (!Array.isArray(input) || input.length === 0) {
+        return [];
+    }
+    return input
+        .slice(0, VOICE_WAVEFORM_POINTS_MAX)
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.min(1, Math.max(0.001, Math.round(value * 1000) / 1000)));
 }
 
 function sanitizeReactions(input) {
