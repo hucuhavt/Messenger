@@ -289,6 +289,17 @@ const WALLPAPER_PRESETS = [
 const WALLPAPER_PRESET_MAP = Object.fromEntries(
     WALLPAPER_PRESETS.map((item) => [item.id, item.css])
 );
+const VOICE_MAX_DURATION_SEC = 90;
+const VOICE_MAX_DATA_URL_LENGTH = 900000;
+const VOICE_WAVEFORM_BARS = 48;
+const CHAT_SWIPE_REVEAL_RATIO = 0.5;
+const CHAT_SWIPE_OPEN_THRESHOLD = 0.32;
+const VOICE_MIME_CANDIDATES = [
+    "audio/webm;codecs=opus",
+    "audio/ogg;codecs=opus",
+    "audio/webm",
+    "audio/ogg"
+];
 const FALLBACK_COUNTRY_OPTIONS = [
     { iso: "AE", name: "United Arab Emirates", dialCodes: ["+971"] },
     { iso: "AL", name: "Albania", dialCodes: ["+355"] },
@@ -387,7 +398,14 @@ const runtime = {
     settingsAvatarDraft: null,
     avatarCrop: null,
     settingsAutoSaveTimer: null,
-    lastUiStateSnapshot: ""
+    lastUiStateSnapshot: "",
+    voiceRecording: null,
+    voiceRecordTimerId: null,
+    activeVoiceAudio: null,
+    voiceSeekDrag: null,
+    voiceAudioContext: null,
+    chatSwipeDrag: null,
+    chatSwipeSuppressClickUntil: 0
 };
 
 const el = {};
@@ -403,6 +421,17 @@ async function init() {
     cacheElements();
     initializeTheme();
     bindEvents();
+    resetVoiceRecordButton();
+    updateVoiceRecordingStateUi();
+    updateSendButtonVisibility();
+    if (el.voiceRecordBtn && !isVoiceRecordingSupported()) {
+        el.voiceRecordBtn.disabled = true;
+        el.voiceRecordBtn.title = "Голосовые сообщения не поддерживаются";
+        el.voiceRecordBtn.setAttribute(
+            "aria-label",
+            "Голосовые сообщения не поддерживаются"
+        );
+    }
     await setupCountrySelector();
     restoreSession();
     await syncFromServer({ silent: true });
@@ -485,9 +514,11 @@ function cacheElements() {
     el.cancelMessageEditBtn = document.getElementById("cancelMessageEditBtn");
     el.messageForm = document.getElementById("messageForm");
     el.messageInput = document.getElementById("messageInput");
+    el.voiceRecordState = document.getElementById("voiceRecordState");
     el.sendMessageBtn = document.getElementById("sendMessageBtn");
     el.fileInput = document.getElementById("fileInput");
     el.attachBtn = document.getElementById("attachBtn");
+    el.voiceRecordBtn = document.getElementById("voiceRecordBtn");
     el.attachmentList = document.getElementById("attachmentList");
 
     el.infoPanel = document.getElementById("infoPanel");
@@ -576,6 +607,7 @@ function bindEvents() {
     el.chatList.addEventListener("click", onChatListClick);
     el.chatList.addEventListener("change", onChatListChange);
     el.chatList.addEventListener("input", onChatListInput);
+    el.chatList.addEventListener("pointerdown", onChatListPointerDown);
     el.chatSearchInput.addEventListener("input", onSidebarSearchInput);
     if (el.sectionRail) {
         el.sectionRail.addEventListener("click", onSectionRailClick);
@@ -589,11 +621,20 @@ function bindEvents() {
 
     el.messageForm.addEventListener("submit", onSendMessage);
     el.messageInput.addEventListener("input", autoResizeComposer);
+    el.messageInput.addEventListener("input", updateSendButtonVisibility);
     el.attachBtn.addEventListener("click", () => el.fileInput.click());
+    if (el.voiceRecordBtn) {
+        el.voiceRecordBtn.addEventListener("pointerdown", onVoiceRecordPointerDown);
+        el.voiceRecordBtn.addEventListener("click", (event) => event.preventDefault());
+    }
     el.fileInput.addEventListener("change", onFilesSelected);
     el.attachmentList.addEventListener("click", onAttachmentRemove);
+    el.attachmentList.addEventListener("click", onVoicePlayerClick);
+    el.attachmentList.addEventListener("pointerdown", onVoicePlayerPointerDown);
 
     el.messagesContainer.addEventListener("click", onMessagesContainerClick);
+    el.messagesContainer.addEventListener("click", onVoicePlayerClick);
+    el.messagesContainer.addEventListener("pointerdown", onVoicePlayerPointerDown);
     el.messagesContainer.addEventListener("pointerdown", onMessagesPointerDown);
     el.messagesContainer.addEventListener("pointerup", clearMessageLongPress);
     el.messagesContainer.addEventListener("pointermove", onMessagesPointerMove);
@@ -633,6 +674,9 @@ function bindEvents() {
         el.appearanceSettingsModal.addEventListener("change", onAppearanceSettingsModalChange);
         el.appearanceSettingsModal.addEventListener("input", onAppearanceSettingsModalInput);
         el.appearanceSettingsModal.addEventListener("click", onAppearanceSettingsModalClick);
+    }
+    if (el.mediaLibraryContent) {
+        el.mediaLibraryContent.addEventListener("click", onMediaLibraryContentClick);
     }
 
     el.newChatBtn.addEventListener("click", openNewChatModal);
@@ -684,6 +728,12 @@ function bindEvents() {
     document.addEventListener("click", onDocumentClick);
     document.addEventListener("keydown", onGlobalKeyDown);
     document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pointermove", onVoiceRecordPointerMove);
+    window.addEventListener("pointerup", onVoiceRecordPointerUp);
+    window.addEventListener("pointercancel", onVoiceRecordPointerCancel);
+    window.addEventListener("pointermove", onChatListPointerMove);
+    window.addEventListener("pointerup", onChatListPointerUp);
+    window.addEventListener("pointercancel", onChatListPointerCancel);
     window.addEventListener("resize", onViewportResize);
 }
 
@@ -1846,6 +1896,8 @@ function showAuthStep(step) {
 function enterAuth() {
     el.appScreen.classList.add("hidden");
     el.authScreen.classList.remove("hidden");
+    stopVoiceRecording({ discard: true, silent: true });
+    stopActiveVoicePlayback({ reset: true });
     applyCurrentUserDisplayPreferences();
     cancelMessageEditing({ silent: true });
     closeMessageActionMenu();
@@ -1867,6 +1919,8 @@ function enterAuth() {
 function enterApp() {
     el.authScreen.classList.add("hidden");
     el.appScreen.classList.remove("hidden");
+    stopVoiceRecording({ discard: true, silent: true });
+    stopActiveVoicePlayback({ reset: true });
     closeMessageActionMenu();
     clearMessageLongPress();
     cancelMessageEditing({ silent: true });
@@ -1948,6 +2002,10 @@ function setSidebarSection(section) {
     runtime.sidebarQuery = "";
     runtime.settingsAvatarDraft = null;
     el.chatSearchInput.value = "";
+    if (nextSection !== "chats") {
+        stopVoiceRecording({ discard: true, silent: true });
+        stopActiveVoicePlayback({ reset: true });
+    }
     closeCreateMenu();
     persistUiState();
     renderApp();
@@ -1982,22 +2040,22 @@ function getSidebarSectionConfig(section) {
     const map = {
         chats: {
             title: "Чаты",
-            searchLabel: "Поиск чатов",
-            searchPlaceholder: "Название, участник, сообщение",
+            searchLabel: "",
+            searchPlaceholder: "Поиск",
             searchable: true,
             canCreate: true
         },
         calls: {
             title: "Звонки",
             searchLabel: "Поиск звонков",
-            searchPlaceholder: "Имя, тип звонка, длительность",
+            searchPlaceholder: "Поиск",
             searchable: true,
             canCreate: false
         },
         contacts: {
             title: "Контакты",
             searchLabel: "Поиск контактов",
-            searchPlaceholder: "Имя, username, телефон",
+            searchPlaceholder: "Поиск",
             searchable: true,
             canCreate: false
         },
@@ -2020,6 +2078,7 @@ function updateSidebarChrome() {
     el.chatList.classList.toggle("is-settings-scroll-hidden", runtime.sidebarSection === "settings");
     if (config.searchable) {
         el.sidebarSearchLabel.textContent = config.searchLabel;
+        el.sidebarSearchLabel.classList.toggle("hidden", !config.searchLabel);
         el.chatSearchInput.placeholder = config.searchPlaceholder;
     }
     el.railButtons.forEach((button) => {
@@ -2060,21 +2119,71 @@ function renderChatList(query = runtime.sidebarQuery) {
             const lastMessage = chat.messages[chat.messages.length - 1];
             const preview = getMessagePreview(lastMessage);
             const time = lastMessage ? formatTime(lastMessage.createdAt) : "";
-            const unread = chat.unreadCount || 0;
             const activeClass = chat.id === state.activeChatId ? "is-active" : "";
             const pinnedClass = chat.pinned ? "is-pinned" : "";
+            const muteTitle = chat.muted ? "Включить звук" : "Выключить звук";
 
             return `
-                <li class="chat-item ${activeClass} ${pinnedClass}" data-chat-id="${esc(chat.id)}">
-                    ${renderAvatarMarkup(info.avatar, info.color, info.initials)}
-                    <div class="chat-body">
-                        <div class="chat-row">
-                            <h4>${esc(info.title)}</h4>
-                            <p>${esc(time)}</p>
-                        </div>
-                        <div class="chat-row">
-                            <div class="chat-preview">${esc(preview)}</div>
-                            ${unread ? `<span class="badge">${unread}</span>` : ""}
+                <li class="chat-swipe-row" data-chat-swipe-row="${esc(chat.id)}">
+                    <div class="chat-swipe-actions">
+                        <button
+                            class="chat-swipe-action-btn"
+                            type="button"
+                            title="${esc(muteTitle)}"
+                            data-chat-swipe-action="mute"
+                            data-chat-id="${esc(chat.id)}"
+                        >
+                            <svg class="chat-swipe-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M4 14.2h3.5l4.4 3.4V6.4L7.5 9.8H4z"></path>
+                                <path d="M15.2 9.4a4.8 4.8 0 0 1 0 5.2"></path>
+                                <path d="M17.8 7.4a8.2 8.2 0 0 1 0 9.2"></path>
+                                <path d="M4.5 4.6 19.4 19.5"></path>
+                            </svg>
+                            <span>${esc(muteTitle)}</span>
+                        </button>
+                        <button
+                            class="chat-swipe-action-btn"
+                            type="button"
+                            title="Удалить чат"
+                            data-chat-swipe-action="delete"
+                            data-chat-id="${esc(chat.id)}"
+                        >
+                            <svg class="chat-swipe-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M6.8 8.3h10.4l-.8 11H7.6z"></path>
+                                <path d="M9.1 8.3V6.7h5.8v1.6"></path>
+                                <path d="M8.3 5.8h7.4"></path>
+                                <path d="M7.6 7.1 6.8 8.3"></path>
+                                <path d="M16.4 7.1 17.2 8.3"></path>
+                                <path d="M10 11.2v5.1"></path>
+                                <path d="M14 11.2v5.1"></path>
+                            </svg>
+                            <span>Удалить</span>
+                        </button>
+                        <button
+                            class="chat-swipe-action-btn"
+                            type="button"
+                            title="В архив"
+                            data-chat-swipe-action="archive"
+                            data-chat-id="${esc(chat.id)}"
+                        >
+                            <svg class="chat-swipe-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M4.8 6.2h14.4v3.6H4.8z"></path>
+                                <path d="M6.1 9.8h11.8v8.4H6.1z"></path>
+                                <path d="M9 13.4h6"></path>
+                            </svg>
+                            <span>Архив</span>
+                        </button>
+                    </div>
+                    <div class="chat-item ${activeClass} ${pinnedClass}" data-chat-id="${esc(chat.id)}">
+                        ${renderAvatarMarkup(info.avatar, info.color, info.initials)}
+                        <div class="chat-body">
+                            <div class="chat-row">
+                                <h4>${esc(info.title)}</h4>
+                                <p>${esc(time)}</p>
+                            </div>
+                            <div class="chat-row">
+                                <div class="chat-preview">${esc(preview)}</div>
+                            </div>
                         </div>
                     </div>
                 </li>
@@ -2366,6 +2475,7 @@ function renderActiveChat() {
     el.messagesContainer.innerHTML = visibleMessages
         .map((message) => renderMessage(message, chat, currentUser.id))
         .join("");
+    initializeVoicePlayers(el.messagesContainer);
 
     if (!runtime.messageQuery) {
         el.messagesContainer.scrollTop = el.messagesContainer.scrollHeight;
@@ -2379,8 +2489,23 @@ function renderMessage(message, chat, currentUserId) {
     const isPinned = Boolean(message.pinned);
     const isEdited = Boolean(message.editedAt);
     const actionTitle = "Действия сообщения";
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const voiceAttachments = attachments.filter((attachment) =>
+        isVoiceAttachment(attachment)
+    );
+    const fileAttachments = attachments.filter(
+        (attachment) => !isVoiceAttachment(attachment)
+    );
 
-    const filesHtml = (message.attachments || [])
+    const voiceHtml = voiceAttachments
+        .map((voice) =>
+            renderVoicePlayerMarkup(voice, {
+                label: "Голосовое сообщение",
+                className: "voice-player"
+            })
+        )
+        .join("");
+    const filesHtml = fileAttachments
         .map((file) => `<span class="file-pill">${esc(file.name)}</span>`)
         .join("");
 
@@ -2445,6 +2570,7 @@ function renderMessage(message, chat, currentUserId) {
                 </span>
             </div>
             ${message.text ? `<p class="message-text">${esc(message.text)}</p>` : ""}
+            ${voiceHtml ? `<div class="message-voice-list">${voiceHtml}</div>` : ""}
             ${filesHtml ? `<div class="message-files">${filesHtml}</div>` : ""}
             ${reactionButtons ? `<div class="reactions">${reactionButtons}</div>` : ""}
         </article>
@@ -2461,6 +2587,9 @@ function renderInfoPanel() {
     }
 
     const info = getChatVisualInfo(chat);
+    const currentUser = getCurrentUser();
+    const currentUserId = currentUser ? currentUser.id : "";
+    const blocked = isChatBlockedForUser(chat, currentUserId);
     const participants = chat.participants.map((id) => getUserById(id)).filter(Boolean);
     const chatTypeLabel = chat.type === "group" ? "Группа" : "Личный чат";
     const library = collectChatLibrary(chat);
@@ -2482,18 +2611,29 @@ function renderInfoPanel() {
             <strong>${participants.length}</strong>
         </div>
         <div class="chat-info-row">
-            <span>Сообщений</span>
-            <strong>${chat.messages.length}</strong>
-        </div>
-        <div class="chat-info-row">
             <span>Уведомления</span>
             <strong>${chat.muted ? "Выключены" : "Включены"}</strong>
         </div>
-        <button class="chat-info-action-row" type="button" data-open-media-library="1">
+        <div class="chat-info-row">
+            <span>Статус</span>
+            <strong>${blocked ? "Заблокирован" : "Активен"}</strong>
+        </div>
+        <button class="chat-info-action-row" type="button" data-chat-info-action="search">
+            <span class="chat-info-action-label">Поиск по сообщениям</span>
+        </button>
+        <button class="chat-info-action-row" type="button" data-chat-info-action="media-library">
             <span class="chat-info-action-label">Медиа, документы, ссылки</span>
             <span class="chat-info-action-meta">
                 ${library.media.length} / ${library.documents.length} / ${library.links.length}
             </span>
+        </button>
+        <button
+            class="chat-info-action-row ${blocked ? "is-neutral" : "is-danger"}"
+            type="button"
+            data-chat-info-action="toggle-block"
+        >
+            <span class="chat-info-action-label">${blocked ? "Разблокировать чат" : "Заблокировать чат"}</span>
+            <span class="chat-info-action-meta">${blocked ? "Снова включить чат" : "Отключить сообщения и звонки"}</span>
         </button>
     `;
 
@@ -2502,8 +2642,7 @@ function renderInfoPanel() {
         return;
     }
 
-    const currentUser = getCurrentUser();
-    const canManage = (chat.adminIds || []).includes(currentUser.id);
+    const canManage = Boolean(currentUser) && (chat.adminIds || []).includes(currentUser.id);
     el.groupManageBlock.classList.remove("hidden");
 
     el.participantsList.innerHTML = participants
@@ -2575,6 +2714,7 @@ function getOrCreatePrivateChatWithUser(userId) {
     }
     const chat = createOrGetPrivateChat(currentUser.id, userId);
     chat.unreadCount = 0;
+    chat.archived = false;
     return chat;
 }
 
@@ -2599,6 +2739,10 @@ function startCall(callType, options = {}) {
     );
     if (!chat) {
         showToast("Сначала откройте чат для звонка.");
+        return;
+    }
+    if (isChatBlockedForUser(chat, currentUser.id)) {
+        showToast("Чат заблокирован. Разблокируйте его для звонков.");
         return;
     }
 
@@ -2853,6 +2997,8 @@ function onCreateGroup() {
         ],
         pinned: false,
         muted: false,
+        archived: false,
+        blockedBy: [],
         unreadCount: 0,
         updatedAt: Date.now()
     };
@@ -2915,6 +3061,18 @@ async function onSendMessage(event) {
     const chat = getActiveChat();
     const currentUser = getCurrentUser();
     if (!chat || !currentUser) {
+        return;
+    }
+    if (isChatBlockedForUser(chat, currentUser.id)) {
+        showToast("Чат заблокирован. Разблокируйте его в информации о чате.");
+        return;
+    }
+    if (runtime.voiceRecording) {
+        if (runtime.voiceRecording.locked) {
+            await stopVoiceRecording({ autoSend: true, silent: true });
+            return;
+        }
+        showToast("Отпустите кнопку записи, чтобы отправить голосовое.");
         return;
     }
 
@@ -2982,13 +3140,914 @@ async function onSendMessage(event) {
     }
 }
 
+function onVoiceRecordPointerDown(event) {
+    if (!el.voiceRecordBtn || el.voiceRecordBtn.disabled) {
+        return;
+    }
+    if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+    }
+    if (runtime.voiceRecording) {
+        return;
+    }
+    event.preventDefault();
+    startVoiceRecording({
+        pointerId: event.pointerId,
+        startY: Number(event.clientY || 0)
+    }).then((started) => {
+        if (!started) {
+            return;
+        }
+        if (el.voiceRecordBtn.setPointerCapture && event.pointerId !== undefined) {
+            try {
+                el.voiceRecordBtn.setPointerCapture(event.pointerId);
+            } catch (error) {}
+        }
+    });
+}
+
+function onVoiceRecordPointerMove(event) {
+    onVoiceSeekPointerMove(event);
+    const recording = runtime.voiceRecording;
+    if (!recording || recording.locked) {
+        return;
+    }
+    if (recording.pointerId !== null && event.pointerId !== recording.pointerId) {
+        return;
+    }
+    const deltaY = Number(event.clientY || 0) - Number(recording.startY || 0);
+    if (deltaY <= -46) {
+        lockVoiceRecording();
+    }
+}
+
+function onVoiceRecordPointerUp(event) {
+    onVoiceSeekPointerUp(event);
+    const recording = runtime.voiceRecording;
+    if (!recording) {
+        return;
+    }
+    if (recording.pointerId !== null && event.pointerId !== recording.pointerId) {
+        return;
+    }
+    if (recording.locked) {
+        return;
+    }
+    stopVoiceRecording({ autoSend: true, silent: true }).catch(() => {});
+}
+
+function onVoiceRecordPointerCancel(event) {
+    onVoiceSeekPointerCancel(event);
+    const recording = runtime.voiceRecording;
+    if (!recording) {
+        return;
+    }
+    if (recording.pointerId !== null && event.pointerId !== recording.pointerId) {
+        return;
+    }
+    if (recording.locked) {
+        return;
+    }
+    stopVoiceRecording({ discard: true, silent: true }).catch(() => {});
+}
+
+function isVoiceRecordingSupported() {
+    return Boolean(
+        navigator.mediaDevices &&
+            typeof navigator.mediaDevices.getUserMedia === "function" &&
+            typeof window.MediaRecorder !== "undefined"
+    );
+}
+
+function pickVoiceMimeType() {
+    if (typeof window.MediaRecorder === "undefined") {
+        return "";
+    }
+    for (const mimeType of VOICE_MIME_CANDIDATES) {
+        if (window.MediaRecorder.isTypeSupported(mimeType)) {
+            return mimeType;
+        }
+    }
+    return "";
+}
+
+function getVoiceRecordButtonIconMarkup(mode = "idle") {
+    if (mode === "locked") {
+        return `
+            <svg class="composer-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <rect x="7.4" y="10.2" width="9.2" height="8.2" rx="1.7"></rect>
+                <path d="M9.3 10.2V8.6a2.7 2.7 0 1 1 5.4 0v1.6"></path>
+            </svg>
+        `;
+    }
+    if (mode === "recording") {
+        return `
+            <svg class="composer-action-icon is-fill" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="5"></circle>
+            </svg>
+        `;
+    }
+    return `
+        <svg class="composer-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 3.2a3.2 3.2 0 0 1 3.2 3.2v5.2a3.2 3.2 0 0 1-6.4 0V6.4A3.2 3.2 0 0 1 12 3.2z"></path>
+            <path d="M6.8 10.7a5.2 5.2 0 0 0 10.4 0"></path>
+            <path d="M12 15.9v4.9"></path>
+            <path d="M9.4 20.8h5.2"></path>
+        </svg>
+    `;
+}
+
+function setVoiceRecordButtonIcon(mode = "idle") {
+    if (!el.voiceRecordBtn) {
+        return;
+    }
+    el.voiceRecordBtn.innerHTML = getVoiceRecordButtonIconMarkup(mode);
+}
+
+function resetVoiceRecordButton() {
+    if (!el.voiceRecordBtn) {
+        return;
+    }
+    el.voiceRecordBtn.classList.remove("is-recording", "is-locked");
+    setVoiceRecordButtonIcon("idle");
+    el.voiceRecordBtn.title = "Удерживайте для записи";
+    el.voiceRecordBtn.setAttribute("aria-label", "Удерживайте для записи");
+}
+
+function updateVoiceRecordButton() {
+    if (!el.voiceRecordBtn) {
+        return;
+    }
+    const recording = runtime.voiceRecording;
+    if (!recording) {
+        resetVoiceRecordButton();
+        return;
+    }
+    const seconds = Math.max(0, Math.floor((Date.now() - recording.startedAt) / 1000));
+    const durationLabel = formatVoiceDuration(seconds);
+    el.voiceRecordBtn.classList.add("is-recording");
+    el.voiceRecordBtn.classList.toggle("is-locked", Boolean(recording.locked));
+    setVoiceRecordButtonIcon(recording.locked ? "locked" : "recording");
+    el.voiceRecordBtn.title = recording.locked
+        ? `Запись закреплена (${durationLabel})`
+        : `Запись (${durationLabel})`;
+    el.voiceRecordBtn.setAttribute(
+        "aria-label",
+        recording.locked ? "Запись закреплена" : "Идёт запись голосового сообщения"
+    );
+}
+
+function updateVoiceRecordingStateUi() {
+    const recording = runtime.voiceRecording;
+    const hasRecording = Boolean(recording);
+    if (el.messageInput) {
+        el.messageInput.classList.toggle("hidden", hasRecording);
+    }
+    if (el.voiceRecordState) {
+        if (!hasRecording) {
+            el.voiceRecordState.classList.add("hidden");
+            el.voiceRecordState.textContent = "";
+        } else {
+            const seconds = Math.max(0, Math.floor((Date.now() - recording.startedAt) / 1000));
+            const durationLabel = formatVoiceDuration(seconds);
+            const suffix = recording.locked
+                ? "закреплено • нажмите самолётик для отправки"
+                : "удерживайте • смахните вверх для фиксации";
+            el.voiceRecordState.textContent = `Запись: ${durationLabel} • ${suffix}`;
+            el.voiceRecordState.classList.remove("hidden");
+        }
+    }
+    updateVoiceRecordButton();
+    updateSendButtonVisibility();
+}
+
+function releaseVoiceMediaStream(stream) {
+    if (!stream) {
+        return;
+    }
+    stream.getTracks().forEach((track) => track.stop());
+}
+
+function lockVoiceRecording() {
+    const recording = runtime.voiceRecording;
+    if (!recording || recording.locked) {
+        return;
+    }
+    recording.locked = true;
+    recording.pointerId = null;
+    updateVoiceRecordingStateUi();
+    showToast("Запись закреплена. Нажмите самолётик для отправки.");
+}
+
+async function startVoiceRecording(options = {}) {
+    if (!isVoiceRecordingSupported()) {
+        showToast("Голосовые сообщения не поддерживаются в этом браузере.");
+        return false;
+    }
+    if (runtime.editingMessage) {
+        showToast("Во время редактирования запись недоступна.");
+        return false;
+    }
+    if (runtime.pendingAttachments.length >= 8) {
+        showToast("Максимум 8 вложений в одном сообщении.");
+        return false;
+    }
+    const activeChat = getActiveChat();
+    const currentUser = getCurrentUser();
+    if (!activeChat || !currentUser) {
+        showToast("Сначала выберите чат.");
+        return false;
+    }
+    if (isChatBlockedForUser(activeChat, currentUser.id)) {
+        showToast("Чат заблокирован. Разблокируйте его для записи голосовых.");
+        return false;
+    }
+
+    let stream = null;
+    try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const mimeType = pickVoiceMimeType();
+        const recorder = mimeType
+            ? new MediaRecorder(stream, { mimeType })
+            : new MediaRecorder(stream);
+        const chunks = [];
+        const recordingSession = {
+            recorder,
+            stream,
+            startedAt: Date.now(),
+            mimeType: mimeType || "audio/webm",
+            pointerId: Number.isFinite(options.pointerId) ? options.pointerId : null,
+            startY: Number(options.startY || 0),
+            locked: false,
+            discard: false,
+            silent: false,
+            autoSend: false
+        };
+
+        recorder.addEventListener("dataavailable", (event) => {
+            if (event.data && event.data.size > 0) {
+                chunks.push(event.data);
+            }
+        });
+        recorder.addEventListener("stop", () => {
+            finalizeVoiceRecording(recordingSession, chunks).catch(() => {
+                showToast("Не удалось обработать голосовое сообщение.");
+            });
+        });
+        recorder.addEventListener("error", () => {
+            showToast("Ошибка записи голосового сообщения.");
+        });
+
+        runtime.voiceRecording = recordingSession;
+        recorder.start();
+        if (runtime.voiceRecordTimerId) {
+            clearInterval(runtime.voiceRecordTimerId);
+        }
+        runtime.voiceRecordTimerId = window.setInterval(() => {
+            const activeRecording = runtime.voiceRecording;
+            if (!activeRecording) {
+                return;
+            }
+            const seconds = Math.floor((Date.now() - activeRecording.startedAt) / 1000);
+            if (seconds >= VOICE_MAX_DURATION_SEC) {
+                stopVoiceRecording({ autoSend: Boolean(activeRecording.locked), silent: true }).catch(
+                    () => {}
+                );
+                return;
+            }
+            updateVoiceRecordingStateUi();
+        }, 250);
+        updateVoiceRecordingStateUi();
+        return true;
+    } catch (error) {
+        releaseVoiceMediaStream(stream);
+        showToast("Нет доступа к микрофону.");
+        return false;
+    }
+}
+
+async function stopVoiceRecording(options = {}) {
+    const recording = runtime.voiceRecording;
+    if (!recording) {
+        return;
+    }
+    recording.discard = Boolean(options.discard);
+    recording.silent = Boolean(options.silent);
+    recording.autoSend = Boolean(options.autoSend);
+    runtime.voiceRecording = null;
+    if (runtime.voiceRecordTimerId) {
+        clearInterval(runtime.voiceRecordTimerId);
+        runtime.voiceRecordTimerId = null;
+    }
+    updateVoiceRecordingStateUi();
+    if (recording.recorder.state !== "inactive") {
+        recording.recorder.stop();
+    } else {
+        releaseVoiceMediaStream(recording.stream);
+    }
+}
+
+async function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("FileReader error"));
+        reader.readAsDataURL(blob);
+    });
+}
+
+function guessVoiceFileExtension(mimeType) {
+    const safeMime = String(mimeType || "").toLowerCase();
+    if (safeMime.includes("ogg")) {
+        return "ogg";
+    }
+    if (safeMime.includes("mp4") || safeMime.includes("m4a")) {
+        return "m4a";
+    }
+    return "webm";
+}
+
+function formatVoiceDuration(seconds) {
+    const safeSeconds = Math.max(0, Number(seconds) || 0);
+    const minutes = Math.floor(safeSeconds / 60)
+        .toString()
+        .padStart(2, "0");
+    const restSeconds = (safeSeconds % 60).toString().padStart(2, "0");
+    return `${minutes}:${restSeconds}`;
+}
+
+function formatVoiceDurationMs(seconds) {
+    const totalMilliseconds = Math.max(
+        0,
+        Math.round((Number(seconds) || 0) * 1000)
+    );
+    const minutes = Math.floor(totalMilliseconds / 60000)
+        .toString()
+        .padStart(2, "0");
+    const restSeconds = Math.floor((totalMilliseconds % 60000) / 1000)
+        .toString()
+        .padStart(2, "0");
+    const milliseconds = (totalMilliseconds % 1000).toString().padStart(3, "0");
+    return `${minutes}:${restSeconds}.${milliseconds}`;
+}
+
+function normalizeVoiceWaveform(input, points = VOICE_WAVEFORM_BARS) {
+    if (!Array.isArray(input) || input.length === 0) {
+        return [];
+    }
+    const targetPoints = Math.max(8, Math.min(128, Math.round(points) || VOICE_WAVEFORM_BARS));
+    const source = input
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0);
+    if (source.length === 0) {
+        return [];
+    }
+
+    const resampled = [];
+    for (let index = 0; index < targetPoints; index += 1) {
+        const start = Math.floor((index * source.length) / targetPoints);
+        const end = Math.max(
+            start + 1,
+            Math.floor(((index + 1) * source.length) / targetPoints)
+        );
+        let peak = 0;
+        for (let sampleIndex = start; sampleIndex < Math.min(end, source.length); sampleIndex += 1) {
+            peak = Math.max(peak, source[sampleIndex]);
+        }
+        resampled.push(peak);
+    }
+
+    const peakValue = resampled.reduce((maxValue, value) => Math.max(maxValue, value), 0);
+    if (peakValue <= 0) {
+        return [];
+    }
+    return resampled.map((value) => {
+        const normalized = Math.max(0, Math.min(1, value / peakValue));
+        return Math.round((0.16 + normalized * 0.84) * 1000) / 1000;
+    });
+}
+
+function hashVoiceWaveSeed(seed) {
+    const text = String(seed || "");
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function buildFallbackVoiceWaveform(seed, points = VOICE_WAVEFORM_BARS) {
+    const size = Math.max(8, Math.min(128, Math.round(points) || VOICE_WAVEFORM_BARS));
+    let value = hashVoiceWaveSeed(seed) || 123456789;
+    const result = [];
+    for (let index = 0; index < size; index += 1) {
+        value ^= value << 13;
+        value ^= value >>> 17;
+        value ^= value << 5;
+        const randomPart = (value >>> 0) / 4294967295;
+        const trendPart = 0.5 + 0.5 * Math.sin((index / size) * Math.PI * 5);
+        const amplitude = 0.18 + (randomPart * 0.55 + trendPart * 0.45) * 0.82;
+        result.push(Math.round(Math.max(0.16, Math.min(1, amplitude)) * 1000) / 1000);
+    }
+    return result;
+}
+
+function getVoiceWaveform(attachment) {
+    const normalized = normalizeVoiceWaveform(
+        attachment && attachment.waveform,
+        VOICE_WAVEFORM_BARS
+    );
+    if (normalized.length > 0) {
+        return normalized;
+    }
+    const seed = `${
+        attachment && attachment.id ? attachment.id : ""
+    }-${Number((attachment && attachment.durationSec) || 0)}-${
+        attachment && attachment.size ? attachment.size : 0
+    }-${attachment && attachment.name ? attachment.name : ""}`;
+    return buildFallbackVoiceWaveform(seed, VOICE_WAVEFORM_BARS);
+}
+
+function renderVoiceWaveformMarkup(waveform) {
+    const bars = Array.isArray(waveform) && waveform.length > 0
+        ? waveform
+        : buildFallbackVoiceWaveform("voice-default", VOICE_WAVEFORM_BARS);
+    return bars
+        .map(
+            (value, index) =>
+                `<span class="voice-wave-bar" data-voice-bar-index="${index}" style="--voice-wave-height:${Math.max(
+                    0.16,
+                    Math.min(1, Number(value) || 0.16)
+                )};"></span>`
+        )
+        .join("");
+}
+
+function getVoiceAudioContext() {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) {
+        return null;
+    }
+    if (!runtime.voiceAudioContext || runtime.voiceAudioContext.state === "closed") {
+        runtime.voiceAudioContext = new AudioContextClass();
+    }
+    return runtime.voiceAudioContext;
+}
+
+async function buildVoiceWaveformFromBlob(blob) {
+    if (!(blob instanceof Blob) || !blob.size) {
+        return null;
+    }
+    const audioContext = getVoiceAudioContext();
+    if (!audioContext) {
+        return null;
+    }
+    try {
+        const audioBuffer = await audioContext.decodeAudioData((await blob.arrayBuffer()).slice(0));
+        const channelData = audioBuffer.getChannelData(0);
+        if (!channelData || channelData.length === 0) {
+            return null;
+        }
+        const bars = VOICE_WAVEFORM_BARS;
+        const samplesPerBar = Math.max(1, Math.floor(channelData.length / bars));
+        const peaks = [];
+        for (let index = 0; index < bars; index += 1) {
+            const start = index * samplesPerBar;
+            const end = index === bars - 1 ? channelData.length : Math.min(channelData.length, (index + 1) * samplesPerBar);
+            const stride = Math.max(1, Math.floor((end - start) / 60));
+            let peak = 0;
+            for (let sampleIndex = start; sampleIndex < end; sampleIndex += stride) {
+                peak = Math.max(peak, Math.abs(channelData[sampleIndex]));
+            }
+            peaks.push(peak);
+        }
+        return {
+            waveform: normalizeVoiceWaveform(peaks, bars),
+            durationSec: Number.isFinite(audioBuffer.duration) ? audioBuffer.duration : 0
+        };
+    } catch (error) {
+        return null;
+    }
+}
+
+function renderVoicePlayerMarkup(attachment, options = {}) {
+    const className = options.className || "voice-player";
+    const label = options.label || "Голосовое сообщение";
+    const durationSec = Math.max(0, Number((attachment && attachment.durationSec) || 0));
+    const durationLabel = formatVoiceDurationMs(durationSec);
+    const audioData = attachment && attachment.audioData ? String(attachment.audioData) : "";
+    const waveform = getVoiceWaveform(attachment);
+    return `
+        <div class="${className}" data-voice-player data-voice-duration-seconds="${esc(durationSec)}">
+            <button
+                class="voice-player-toggle"
+                type="button"
+                data-voice-action="toggle"
+                aria-label="Воспроизвести голосовое"
+                title="Воспроизвести"
+            >
+                ▶
+            </button>
+            <div class="voice-player-track">
+                <div
+                    class="voice-player-wave"
+                    data-voice-action="seek"
+                    aria-label="Перемотка голосового сообщения"
+                    title="Перемотка голосового сообщения"
+                >
+                    ${renderVoiceWaveformMarkup(waveform)}
+                </div>
+                <div class="voice-player-meta">
+                    <span class="voice-player-label">${esc(label)}</span>
+                    <span class="voice-player-time" data-voice-current>00:00.000</span>
+                    <span class="voice-player-separator">/</span>
+                    <span class="voice-player-time" data-voice-duration>${esc(durationLabel)}</span>
+                </div>
+            </div>
+            <audio preload="metadata" src="${esc(audioData)}" data-voice-audio></audio>
+        </div>
+    `;
+}
+
+function getVoicePlayerAudio(playerNode) {
+    if (!playerNode) {
+        return null;
+    }
+    const audio = playerNode.querySelector("[data-voice-audio]");
+    return audio instanceof HTMLAudioElement ? audio : null;
+}
+
+function syncVoicePlayerUi(playerNode) {
+    if (!playerNode) {
+        return;
+    }
+    const audio = getVoicePlayerAudio(playerNode);
+    if (!audio) {
+        return;
+    }
+    const toggleBtn = playerNode.querySelector("[data-voice-action='toggle']");
+    const seekNode = playerNode.querySelector("[data-voice-action='seek']");
+    const currentNode = playerNode.querySelector("[data-voice-current]");
+    const durationNode = playerNode.querySelector("[data-voice-duration]");
+    const hasDuration = Number.isFinite(audio.duration) && audio.duration > 0;
+    const currentSeconds = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    const fallbackDuration = Math.max(
+        0,
+        Number(playerNode.dataset.voiceDurationSeconds || 0)
+    );
+    const durationSeconds = hasDuration ? audio.duration : fallbackDuration;
+    const isPlaying = !audio.paused && !audio.ended;
+
+    if (toggleBtn) {
+        toggleBtn.textContent = isPlaying ? "❚❚" : "▶";
+        toggleBtn.title = isPlaying ? "Пауза" : "Воспроизвести";
+        toggleBtn.setAttribute(
+            "aria-label",
+            isPlaying ? "Поставить на паузу" : "Воспроизвести голосовое"
+        );
+    }
+
+    if (seekNode) {
+        const bars = Array.from(seekNode.querySelectorAll(".voice-wave-bar"));
+        const progressRatio =
+            durationSeconds > 0
+                ? Math.max(0, Math.min(1, currentSeconds / durationSeconds))
+                : 0;
+        const playedCount =
+            durationSeconds > 0 && currentSeconds > 0
+                ? Math.min(
+                      bars.length,
+                      Math.max(1, Math.ceil(progressRatio * bars.length))
+                  )
+                : 0;
+        bars.forEach((barNode, index) => {
+            barNode.classList.toggle("is-played", index < playedCount);
+        });
+        seekNode.classList.toggle("is-disabled", !hasDuration);
+    }
+
+    if (currentNode) {
+        currentNode.textContent = formatVoiceDurationMs(currentSeconds);
+    }
+    if (durationNode) {
+        durationNode.textContent = formatVoiceDurationMs(durationSeconds);
+    }
+}
+
+function stopActiveVoicePlayback(options = {}) {
+    runtime.voiceSeekDrag = null;
+    const audio = runtime.activeVoiceAudio;
+    runtime.activeVoiceAudio = null;
+    if (!audio) {
+        return;
+    }
+    audio.pause();
+    if (options.reset) {
+        audio.currentTime = 0;
+    }
+}
+
+function initializeVoicePlayers(rootNode) {
+    if (!rootNode) {
+        return;
+    }
+    if (runtime.activeVoiceAudio && !document.contains(runtime.activeVoiceAudio)) {
+        runtime.activeVoiceAudio = null;
+    }
+    const players = Array.from(rootNode.querySelectorAll("[data-voice-player]"));
+    players.forEach((playerNode) => {
+        const audio = getVoicePlayerAudio(playerNode);
+        if (!audio) {
+            return;
+        }
+        if (playerNode.dataset.voiceBound === "1") {
+            syncVoicePlayerUi(playerNode);
+            return;
+        }
+        playerNode.dataset.voiceBound = "1";
+        const update = () => syncVoicePlayerUi(playerNode);
+        audio.addEventListener("loadedmetadata", update);
+        audio.addEventListener("durationchange", update);
+        audio.addEventListener("timeupdate", update);
+        audio.addEventListener("ended", () => {
+            if (runtime.activeVoiceAudio === audio) {
+                runtime.activeVoiceAudio = null;
+            }
+            update();
+        });
+        audio.addEventListener("pause", () => {
+            if (runtime.activeVoiceAudio === audio && (audio.ended || audio.paused)) {
+                runtime.activeVoiceAudio = null;
+            }
+            update();
+        });
+        audio.addEventListener("play", () => {
+            if (runtime.activeVoiceAudio && runtime.activeVoiceAudio !== audio) {
+                runtime.activeVoiceAudio.pause();
+            }
+            runtime.activeVoiceAudio = audio;
+            update();
+        });
+        update();
+    });
+}
+
+function onVoicePlayerClick(event) {
+    const actionNode = event.target.closest("[data-voice-action]");
+    if (!actionNode) {
+        return;
+    }
+    const action = actionNode.dataset.voiceAction || "";
+    if (action !== "toggle") {
+        return;
+    }
+    const playerNode = actionNode.closest("[data-voice-player]");
+    const audio = getVoicePlayerAudio(playerNode);
+    if (!audio) {
+        return;
+    }
+    event.preventDefault();
+    if (audio.paused || audio.ended) {
+        if (runtime.activeVoiceAudio && runtime.activeVoiceAudio !== audio) {
+            runtime.activeVoiceAudio.pause();
+        }
+        audio.play().catch(() => {
+            showToast("Не удалось запустить воспроизведение.");
+        });
+    } else {
+        audio.pause();
+    }
+    syncVoicePlayerUi(playerNode);
+}
+
+function updateVoiceSeekPosition(drag, clientX) {
+    if (!drag || !drag.seekNode || !drag.audio) {
+        return;
+    }
+    if (!Number.isFinite(drag.audio.duration) || drag.audio.duration <= 0) {
+        return;
+    }
+    const rect = drag.seekNode.getBoundingClientRect();
+    if (!rect || rect.width <= 0) {
+        return;
+    }
+    const ratio = Math.max(
+        0,
+        Math.min(1, (Number(clientX || 0) - rect.left) / rect.width)
+    );
+    drag.audio.currentTime = ratio * drag.audio.duration;
+    syncVoicePlayerUi(drag.playerNode);
+}
+
+function onVoicePlayerPointerDown(event) {
+    const seekNode = event.target.closest("[data-voice-action='seek']");
+    if (!seekNode) {
+        return;
+    }
+    if (event.pointerType === "mouse" && event.button !== 0) {
+        return;
+    }
+    const playerNode = seekNode.closest("[data-voice-player]");
+    const audio = getVoicePlayerAudio(playerNode);
+    if (!audio || !Number.isFinite(audio.duration) || audio.duration <= 0) {
+        return;
+    }
+    event.preventDefault();
+    const wasPlaying = !audio.paused && !audio.ended;
+    if (wasPlaying) {
+        audio.pause();
+    }
+    runtime.voiceSeekDrag = {
+        pointerId: event.pointerId,
+        seekNode,
+        playerNode,
+        audio,
+        resumeOnRelease: wasPlaying
+    };
+    if (seekNode.setPointerCapture && event.pointerId !== undefined) {
+        try {
+            seekNode.setPointerCapture(event.pointerId);
+        } catch (error) {}
+    }
+    updateVoiceSeekPosition(runtime.voiceSeekDrag, event.clientX);
+}
+
+function onVoiceSeekPointerMove(event) {
+    const drag = runtime.voiceSeekDrag;
+    if (!drag) {
+        return;
+    }
+    if (drag.pointerId !== null && drag.pointerId !== undefined && event.pointerId !== drag.pointerId) {
+        return;
+    }
+    event.preventDefault();
+    updateVoiceSeekPosition(drag, event.clientX);
+}
+
+function onVoiceSeekPointerUp(event) {
+    const drag = runtime.voiceSeekDrag;
+    if (!drag) {
+        return;
+    }
+    if (drag.pointerId !== null && drag.pointerId !== undefined && event.pointerId !== drag.pointerId) {
+        return;
+    }
+    event.preventDefault();
+    updateVoiceSeekPosition(drag, event.clientX);
+    runtime.voiceSeekDrag = null;
+    if (drag.resumeOnRelease) {
+        drag.audio.play().catch(() => {});
+    }
+}
+
+function onVoiceSeekPointerCancel(event) {
+    const drag = runtime.voiceSeekDrag;
+    if (!drag) {
+        return;
+    }
+    if (drag.pointerId !== null && drag.pointerId !== undefined && event.pointerId !== drag.pointerId) {
+        return;
+    }
+    runtime.voiceSeekDrag = null;
+}
+
+function isVoiceAttachment(attachment) {
+    return Boolean(
+        attachment &&
+            attachment.kind === "voice" &&
+            typeof attachment.audioData === "string" &&
+            attachment.audioData.startsWith("data:audio/")
+    );
+}
+
+function cloneAttachmentForForwarding(attachment) {
+    const base = {
+        id: uid("f"),
+        name: attachment && attachment.name ? attachment.name : "file",
+        size: Number((attachment && attachment.size) || 0)
+    };
+    if (!isVoiceAttachment(attachment)) {
+        return base;
+    }
+    return {
+        ...base,
+        kind: "voice",
+        mimeType: attachment.mimeType || "audio/webm",
+        durationSec: Number(attachment.durationSec || 0),
+        audioData: attachment.audioData,
+        waveform: getVoiceWaveform(attachment)
+    };
+}
+
+function requestSendCurrentDraft() {
+    if (!el.messageForm) {
+        return;
+    }
+    window.setTimeout(() => {
+        if (!el.messageForm) {
+            return;
+        }
+        if (typeof el.messageForm.requestSubmit === "function") {
+            el.messageForm.requestSubmit();
+        } else {
+            el.messageForm.dispatchEvent(
+                new Event("submit", { bubbles: true, cancelable: true })
+            );
+        }
+    }, 0);
+}
+
+async function finalizeVoiceRecording(recording, chunks) {
+    const chunksList = Array.isArray(chunks) ? chunks : [];
+    if (recording && recording.stream) {
+        releaseVoiceMediaStream(recording.stream);
+    }
+    if (recording && recording.discard) {
+        return;
+    }
+    if (!chunksList.length) {
+        return;
+    }
+
+    const mimeType = recording && recording.mimeType ? recording.mimeType : "audio/webm";
+    const blob = new Blob(chunksList, { type: mimeType });
+    if (!blob.size) {
+        return;
+    }
+
+    const startedAt = recording && recording.startedAt ? recording.startedAt : Date.now();
+    const fallbackDurationSec = Math.max(0.001, (Date.now() - startedAt) / 1000);
+    const decoded = await buildVoiceWaveformFromBlob(blob);
+    const durationSec = Math.min(
+        600,
+        Math.max(
+            0.001,
+            Number(
+                decoded && Number.isFinite(decoded.durationSec)
+                    ? decoded.durationSec
+                    : fallbackDurationSec
+            ) || fallbackDurationSec
+        )
+    );
+    const waveform =
+        decoded && Array.isArray(decoded.waveform) && decoded.waveform.length > 0
+            ? decoded.waveform
+            : buildFallbackVoiceWaveform(
+                  `${startedAt}-${blob.size}-${mimeType}`,
+                  VOICE_WAVEFORM_BARS
+              );
+    const dataUrl = await blobToDataUrl(blob);
+    if (!dataUrl || dataUrl.length > VOICE_MAX_DATA_URL_LENGTH) {
+        showToast("Голосовое слишком длинное. Сократите запись.");
+        return;
+    }
+    if (runtime.pendingAttachments.length >= 8) {
+        showToast("Максимум 8 вложений в одном сообщении.");
+        return;
+    }
+
+    const extension = guessVoiceFileExtension(mimeType);
+    const voiceAttachment = {
+        id: uid("f"),
+        kind: "voice",
+        name: `voice-message.${extension}`,
+        size: blob.size,
+        mimeType,
+        durationSec,
+        audioData: dataUrl,
+        waveform
+    };
+    runtime.pendingAttachments.push(voiceAttachment);
+    renderAttachmentList();
+    if (recording && recording.autoSend) {
+        requestSendCurrentDraft();
+        return;
+    }
+    if (!recording || !recording.silent) {
+        showToast("Голосовое добавлено.");
+    }
+}
+
 function onFilesSelected(event) {
+    const chat = getActiveChat();
+    const currentUser = getCurrentUser();
+    if (isChatBlockedForUser(chat, currentUser ? currentUser.id : "")) {
+        event.target.value = "";
+        showToast("Чат заблокирован. Сначала разблокируйте его.");
+        return;
+    }
     const files = Array.from(event.target.files || []);
     if (files.length === 0) {
         return;
     }
-
-    const allowed = files.slice(0, 5);
+    const remainingSlots = Math.max(0, 8 - runtime.pendingAttachments.length);
+    if (remainingSlots <= 0) {
+        event.target.value = "";
+        showToast("Максимум 8 вложений в одном сообщении.");
+        return;
+    }
+    const allowed = files.slice(0, Math.min(5, remainingSlots));
     allowed.forEach((file) => {
         runtime.pendingAttachments.push({
             id: uid("f"),
@@ -2998,6 +4057,9 @@ function onFilesSelected(event) {
     });
     event.target.value = "";
     renderAttachmentList();
+    if (files.length > allowed.length) {
+        showToast("Часть файлов не добавлена из-за лимита вложений.");
+    }
 }
 
 function onAttachmentRemove(event) {
@@ -3016,19 +4078,35 @@ function onAttachmentRemove(event) {
 function renderAttachmentList() {
     if (runtime.pendingAttachments.length === 0) {
         el.attachmentList.innerHTML = "";
+        updateSendButtonVisibility();
         return;
     }
 
     el.attachmentList.innerHTML = runtime.pendingAttachments
-        .map(
-            (file) => `
-            <div class="attachment-chip">
-                <span>${esc(file.name)}</span>
-                <button type="button" data-remove-attachment-id="${esc(file.id)}">×</button>
-            </div>
-        `
-        )
+        .map((file) => {
+            if (isVoiceAttachment(file)) {
+                return `
+                    <div class="attachment-chip attachment-chip-voice">
+                        <div class="attachment-chip-voice-main">
+                            ${renderVoicePlayerMarkup(file, {
+                                label: "Голосовое",
+                                className: "voice-player compact"
+                            })}
+                        </div>
+                        <button type="button" data-remove-attachment-id="${esc(file.id)}">×</button>
+                    </div>
+                `;
+            }
+            return `
+                <div class="attachment-chip">
+                    <span>${esc(file.name)}</span>
+                    <button type="button" data-remove-attachment-id="${esc(file.id)}">×</button>
+                </div>
+            `;
+        })
         .join("");
+    initializeVoicePlayers(el.attachmentList);
+    updateSendButtonVisibility();
 }
 
 function onMessagesContainerClick(event) {
@@ -3055,6 +4133,9 @@ function onMessagesPointerDown(event) {
         return;
     }
     if (event.target.closest("[data-reaction-msg-id]")) {
+        return;
+    }
+    if (event.target.closest("[data-voice-player]")) {
         return;
     }
     const messageNode = event.target.closest("[data-message-id][data-message-chat-id]");
@@ -3474,6 +4555,7 @@ async function onDeleteMessage(chatId, messageId) {
 }
 
 function startMessageEditing(chatId, messageId) {
+    stopVoiceRecording({ discard: true, silent: true });
     const chat = state.chats.find((item) => item.id === chatId);
     const currentUser = getCurrentUser();
     if (!chat || !currentUser) {
@@ -3513,14 +4595,47 @@ function cancelMessageEditing(options = {}) {
 
 function updateComposerMode() {
     const editing = runtime.editingMessage;
+    const activeChat = getActiveChat();
+    const currentUser = getCurrentUser();
+    const blocked = isChatBlockedForUser(activeChat, currentUser ? currentUser.id : "");
     if (el.sendMessageBtn) {
-        el.sendMessageBtn.textContent = editing ? "Сохранить" : "Отправить";
+        const saveMode = Boolean(editing);
+        el.sendMessageBtn.classList.toggle("is-save-mode", saveMode);
+        el.sendMessageBtn.title = saveMode ? "Сохранить изменения" : "Отправить";
+        el.sendMessageBtn.setAttribute(
+            "aria-label",
+            saveMode ? "Сохранить изменения" : "Отправить"
+        );
+    }
+    if (el.attachBtn) {
+        el.attachBtn.disabled = Boolean(blocked);
+    }
+    if (el.voiceRecordBtn) {
+        const unsupported = !isVoiceRecordingSupported();
+        el.voiceRecordBtn.disabled = unsupported || Boolean(editing) || Boolean(blocked);
+        if (unsupported) {
+            el.voiceRecordBtn.title = "Голосовые сообщения не поддерживаются";
+            el.voiceRecordBtn.setAttribute(
+                "aria-label",
+                "Голосовые сообщения не поддерживаются"
+            );
+        } else if (blocked) {
+            el.voiceRecordBtn.title = "Чат заблокирован";
+            el.voiceRecordBtn.setAttribute("aria-label", "Чат заблокирован");
+        } else if (!runtime.voiceRecording) {
+            el.voiceRecordBtn.title = "Записать голосовое";
+            el.voiceRecordBtn.setAttribute("aria-label", "Записать голосовое");
+        }
     }
     if (el.messageInput) {
-        el.messageInput.placeholder = editing
-            ? "Измените сообщение..."
-            : "Введите сообщение...";
+        el.messageInput.disabled = Boolean(blocked);
+        el.messageInput.placeholder = blocked
+            ? "Чат заблокирован"
+            : editing
+              ? "Измените сообщение..."
+              : "Введите сообщение...";
     }
+    updateSendButtonVisibility();
     if (!el.messageEditHint || !el.messageEditHintText) {
         return;
     }
@@ -3537,6 +4652,31 @@ function updateComposerMode() {
         previewText.length > 70 ? `${previewText.slice(0, 70)}...` : previewText;
     el.messageEditHintText.textContent = `Редактирование: ${previewShort}`;
     el.messageEditHint.classList.remove("hidden");
+}
+
+function hasComposerDraft() {
+    const text = el.messageInput ? String(el.messageInput.value || "").trim() : "";
+    const hasText = text.length > 0;
+    const hasAttachments = runtime.pendingAttachments.length > 0;
+    const hasLockedVoice = Boolean(runtime.voiceRecording && runtime.voiceRecording.locked);
+    return hasText || hasAttachments || hasLockedVoice;
+}
+
+function updateSendButtonVisibility() {
+    if (!el.sendMessageBtn) {
+        return;
+    }
+    const chat = getActiveChat();
+    const currentUser = getCurrentUser();
+    if (isChatBlockedForUser(chat, currentUser ? currentUser.id : "")) {
+        el.sendMessageBtn.classList.add("is-hidden");
+        return;
+    }
+    if (runtime.editingMessage) {
+        el.sendMessageBtn.classList.remove("is-hidden");
+        return;
+    }
+    el.sendMessageBtn.classList.toggle("is-hidden", !hasComposerDraft());
 }
 
 async function onToggleMessagePin(chatId, messageId) {
@@ -3636,11 +4776,9 @@ async function onForwardConfirm() {
     const forwardedText = sourceMessage.text
         ? `↪ Переслано от ${sourceSenderName}\n${sourceMessage.text}`
         : `↪ Переслано от ${sourceSenderName}`;
-    const copiedAttachments = (sourceMessage.attachments || []).map((attachment) => ({
-        id: uid("f"),
-        name: attachment.name || "file",
-        size: Number(attachment.size || 0)
-    }));
+    const copiedAttachments = (sourceMessage.attachments || []).map((attachment) =>
+        cloneAttachmentForForwarding(attachment)
+    );
 
     try {
         await apiRequest("/api/messages/send", {
@@ -3759,6 +4897,8 @@ function onLogout() {
     }
     closeMessageActionMenu();
     clearMessageLongPress();
+    stopVoiceRecording({ discard: true, silent: true });
+    stopActiveVoicePlayback({ reset: true });
     cancelMessageEditing({ silent: true });
     if (runtime.activeCall) {
         endActiveCall({ notify: false });
@@ -3847,7 +4987,257 @@ function onRemoveParticipant(event) {
     showToast("Участник удален.");
 }
 
+function getChatSwipeCardNode(rowNode) {
+    if (!rowNode) {
+        return null;
+    }
+    return rowNode.querySelector(".chat-item[data-chat-id]");
+}
+
+function getChatSwipeMaxOffset(rowNode) {
+    const cardNode = getChatSwipeCardNode(rowNode);
+    if (!cardNode) {
+        return 0;
+    }
+    const cardWidth = Math.max(0, cardNode.getBoundingClientRect().width);
+    return Math.round(cardWidth * CHAT_SWIPE_REVEAL_RATIO);
+}
+
+function setChatSwipeOffset(rowNode, offsetPx, options = {}) {
+    if (!rowNode) {
+        return 0;
+    }
+    const cardNode = getChatSwipeCardNode(rowNode);
+    if (!cardNode) {
+        return 0;
+    }
+    const maxOffset = Math.max(
+        0,
+        Number.isFinite(options.maxOffset) ? options.maxOffset : getChatSwipeMaxOffset(rowNode)
+    );
+    const clampedOffset = Math.max(0, Math.min(maxOffset, Number(offsetPx) || 0));
+    rowNode.style.setProperty("--chat-swipe-width", `${maxOffset}px`);
+    rowNode.dataset.swipeMax = String(maxOffset);
+    rowNode.dataset.swipeOffset = String(Math.round(clampedOffset));
+    if (options.animate === false) {
+        cardNode.style.transition = "none";
+    } else {
+        cardNode.style.transition = "";
+    }
+    cardNode.style.transform = clampedOffset > 0 ? `translateX(${-clampedOffset}px)` : "";
+    rowNode.classList.toggle(
+        "is-open",
+        maxOffset > 0 && clampedOffset >= maxOffset * 0.98
+    );
+    return clampedOffset;
+}
+
+function closeChatSwipeRows(excludeChatId = "") {
+    if (!el.chatList) {
+        return;
+    }
+    const rows = Array.from(el.chatList.querySelectorAll(".chat-swipe-row"));
+    rows.forEach((rowNode) => {
+        const chatId = rowNode.dataset.chatSwipeRow || "";
+        if (excludeChatId && chatId === excludeChatId) {
+            return;
+        }
+        setChatSwipeOffset(rowNode, 0, { animate: true });
+        rowNode.classList.remove("is-swiping");
+    });
+}
+
+function onChatListPointerDown(event) {
+    if (runtime.sidebarSection !== "chats") {
+        return;
+    }
+    if (event.pointerType === "mouse") {
+        return;
+    }
+    const cardNode = event.target.closest(".chat-item[data-chat-id]");
+    if (!cardNode) {
+        return;
+    }
+    const rowNode = cardNode.closest(".chat-swipe-row");
+    if (!rowNode) {
+        return;
+    }
+    const chatId = cardNode.dataset.chatId || "";
+    closeChatSwipeRows(chatId);
+    const maxOffset = getChatSwipeMaxOffset(rowNode);
+    const startOffset = Math.max(
+        0,
+        Math.min(maxOffset, Number(rowNode.dataset.swipeOffset || 0))
+    );
+    runtime.chatSwipeDrag = {
+        pointerId: event.pointerId,
+        startX: Number(event.clientX || 0),
+        startY: Number(event.clientY || 0),
+        rowNode,
+        chatId,
+        maxOffset,
+        startOffset,
+        isSwiping: false
+    };
+}
+
+function onChatListPointerMove(event) {
+    const drag = runtime.chatSwipeDrag;
+    if (!drag) {
+        return;
+    }
+    if (drag.pointerId !== event.pointerId) {
+        return;
+    }
+    const deltaX = Number(event.clientX || 0) - drag.startX;
+    const deltaY = Number(event.clientY || 0) - drag.startY;
+    if (!drag.isSwiping) {
+        const absX = Math.abs(deltaX);
+        const absY = Math.abs(deltaY);
+        if (absY > 10 && absY > absX) {
+            runtime.chatSwipeDrag = null;
+            return;
+        }
+        if (absX < 8 || absX < absY * 1.2) {
+            return;
+        }
+        drag.isSwiping = true;
+        drag.rowNode.classList.add("is-swiping");
+    }
+    event.preventDefault();
+    const nextOffset = drag.startOffset - deltaX;
+    setChatSwipeOffset(drag.rowNode, nextOffset, {
+        animate: false,
+        maxOffset: drag.maxOffset
+    });
+}
+
+function finishChatSwipeDrag(event, cancelled = false) {
+    const drag = runtime.chatSwipeDrag;
+    if (!drag) {
+        return;
+    }
+    if (event && drag.pointerId !== event.pointerId) {
+        return;
+    }
+    runtime.chatSwipeDrag = null;
+    drag.rowNode.classList.remove("is-swiping");
+    if (!drag.isSwiping || cancelled) {
+        setChatSwipeOffset(drag.rowNode, drag.startOffset, {
+            animate: true,
+            maxOffset: drag.maxOffset
+        });
+        return;
+    }
+    if (event) {
+        event.preventDefault();
+    }
+    const currentOffset = Number(drag.rowNode.dataset.swipeOffset || 0);
+    const openThreshold = drag.maxOffset * CHAT_SWIPE_OPEN_THRESHOLD;
+    const shouldOpen = currentOffset >= openThreshold;
+    setChatSwipeOffset(drag.rowNode, shouldOpen ? drag.maxOffset : 0, {
+        animate: true,
+        maxOffset: drag.maxOffset
+    });
+    runtime.chatSwipeSuppressClickUntil = Date.now() + 260;
+}
+
+function onChatListPointerUp(event) {
+    finishChatSwipeDrag(event, false);
+}
+
+function onChatListPointerCancel(event) {
+    finishChatSwipeDrag(event, true);
+}
+
+function onSwipeMuteChat(chatId) {
+    const chat = state.chats.find((item) => item.id === chatId);
+    if (!chat) {
+        return;
+    }
+    chat.muted = !chat.muted;
+    chat.updatedAt = Date.now();
+    saveState();
+    renderApp();
+    showToast(chat.muted ? "Уведомления отключены." : "Уведомления включены.");
+}
+
+function onSwipeDeleteChat(chatId) {
+    const chatIndex = state.chats.findIndex((item) => item.id === chatId);
+    if (chatIndex < 0) {
+        return;
+    }
+    const chat = state.chats[chatIndex];
+    const info = getChatVisualInfo(chat);
+    if (!window.confirm(`Удалить чат «${info.title}»?`)) {
+        return;
+    }
+    state.chats.splice(chatIndex, 1);
+    if (state.activeChatId === chatId) {
+        state.activeChatId = null;
+        closeInfoPanel();
+    }
+    if (runtime.activeCall && runtime.activeCall.chatId === chatId) {
+        endActiveCall({ notify: false });
+    }
+    saveState();
+    renderApp();
+    showToast("Чат удалён.");
+}
+
+function onSwipeArchiveChat(chatId) {
+    const chat = state.chats.find((item) => item.id === chatId);
+    if (!chat) {
+        return;
+    }
+    if (chat.archived) {
+        return;
+    }
+    chat.archived = true;
+    chat.updatedAt = Date.now();
+    chat.unreadCount = 0;
+    if (state.activeChatId === chatId) {
+        state.activeChatId = null;
+        closeInfoPanel();
+    }
+    if (runtime.activeCall && runtime.activeCall.chatId === chatId) {
+        endActiveCall({ notify: false });
+    }
+    saveState();
+    renderApp();
+    showToast("Чат отправлен в архив.");
+}
+
 function onChatListClick(event) {
+    if (Date.now() < Number(runtime.chatSwipeSuppressClickUntil || 0)) {
+        event.preventDefault();
+        return;
+    }
+
+    const swipeActionButton = event.target.closest("[data-chat-swipe-action]");
+    if (swipeActionButton) {
+        event.preventDefault();
+        event.stopPropagation();
+        const chatId = swipeActionButton.dataset.chatId || "";
+        const action = swipeActionButton.dataset.chatSwipeAction || "";
+        if (!chatId || !action) {
+            return;
+        }
+        closeChatSwipeRows();
+        if (action === "mute") {
+            onSwipeMuteChat(chatId);
+            return;
+        }
+        if (action === "delete") {
+            onSwipeDeleteChat(chatId);
+            return;
+        }
+        if (action === "archive") {
+            onSwipeArchiveChat(chatId);
+            return;
+        }
+    }
+
     const contactActionButton = event.target.closest("[data-contact-action]");
     if (contactActionButton) {
         const userId = contactActionButton.dataset.userId || "";
@@ -3906,8 +5296,20 @@ function onChatListClick(event) {
     if (!item) {
         return;
     }
+    const swipeRow = item.closest(".chat-swipe-row");
+    if (swipeRow && swipeRow.classList.contains("is-open")) {
+        closeChatSwipeRows();
+        runtime.chatSwipeSuppressClickUntil = Date.now() + 160;
+        return;
+    }
+    stopVoiceRecording({ discard: true, silent: true });
+    stopActiveVoicePlayback({ reset: true });
 
     const chatId = item.dataset.chatId;
+    const targetChat = state.chats.find((chatItem) => chatItem.id === chatId);
+    if (targetChat && targetChat.archived) {
+        targetChat.archived = false;
+    }
     state.activeChatId = chatId;
     if (runtime.sidebarSection !== "chats") {
         runtime.sidebarSection = "chats";
@@ -4878,6 +6280,21 @@ function onDocumentClick(event) {
         }
         closeMessageActionMenu();
     }
+
+    if (
+        isMobileViewport() &&
+        el.layoutRoot.classList.contains("show-info") &&
+        !getOpenedModalId() &&
+        !event.target.closest("#infoPanel") &&
+        !event.target.closest("#chatTitleTrigger")
+    ) {
+        closeInfoPanel();
+        return;
+    }
+
+    if (!event.target.closest(".chat-swipe-row")) {
+        closeChatSwipeRows();
+    }
 }
 
 function onGlobalKeyDown(event) {
@@ -4927,6 +6344,8 @@ function closeActiveChat() {
     if (!state.activeChatId || el.appScreen.classList.contains("hidden")) {
         return;
     }
+    stopVoiceRecording({ discard: true, silent: true });
+    stopActiveVoicePlayback({ reset: true });
     closeMessageActionMenu();
     cancelMessageEditing({ silent: true });
     state.activeChatId = null;
@@ -4958,11 +6377,58 @@ function getOpenedModalId() {
 }
 
 function onChatInfoCardClick(event) {
-    const trigger = event.target.closest("[data-open-media-library]");
-    if (!trigger) {
+    const actionNode = event.target.closest("[data-chat-info-action]");
+    if (!actionNode) {
         return;
     }
-    openMediaLibraryModal();
+    const action = actionNode.dataset.chatInfoAction || "";
+    if (action === "media-library") {
+        openMediaLibraryModal();
+        return;
+    }
+    if (action === "search") {
+        focusActiveChatSearch();
+        return;
+    }
+    if (action === "toggle-block") {
+        toggleActiveChatBlocked();
+    }
+}
+
+function focusActiveChatSearch() {
+    const chat = getActiveChat();
+    if (!chat || !el.messageSearchInput) {
+        return;
+    }
+    if (isMobileViewport()) {
+        closeInfoPanel();
+    }
+    el.messageSearchInput.focus();
+    el.messageSearchInput.select();
+    showToast("Введите слова для поиска сообщений.");
+}
+
+function toggleActiveChatBlocked() {
+    const chat = getActiveChat();
+    const currentUser = getCurrentUser();
+    if (!chat || !currentUser) {
+        return;
+    }
+    const nextBlocked = !isChatBlockedForUser(chat, currentUser.id);
+    setChatBlockedForUser(chat, currentUser.id, nextBlocked);
+    if (nextBlocked) {
+        stopVoiceRecording({ discard: true, silent: true });
+        stopActiveVoicePlayback({ reset: true });
+        runtime.pendingAttachments = [];
+        cancelMessageEditing({ silent: true });
+        if (runtime.activeCall && runtime.activeCall.chatId === chat.id) {
+            endActiveCall({ notify: false });
+        }
+        renderAttachmentList();
+    }
+    saveState();
+    renderApp();
+    showToast(nextBlocked ? "Чат заблокирован." : "Чат разблокирован.");
 }
 
 function openMediaLibraryModal() {
@@ -4974,58 +6440,124 @@ function openMediaLibraryModal() {
 
     const info = getChatVisualInfo(chat);
     const library = collectChatLibrary(chat);
-    el.mediaLibrarySubtitle.textContent = `${info.title} · медиа: ${library.media.length}, документы: ${library.documents.length}, ссылки: ${library.links.length}`;
-    el.mediaLibraryContent.innerHTML = [
-        renderLibrarySection(
-            "Медиа",
-            library.media,
-            "В этом чате пока нет медиа."
-        ),
-        renderLibrarySection(
-            "Документы",
-            library.documents,
-            "В этом чате пока нет документов."
-        ),
-        renderLibrarySection(
-            "Ссылки",
-            library.links,
-            "В этом чате пока нет ссылок.",
-            true
-        )
-    ].join("");
+    const sections = [
+        {
+            key: "media",
+            title: "Медиа",
+            items: library.media,
+            emptyText: "В этом чате пока нет медиа.",
+            isGallery: true
+        },
+        {
+            key: "links",
+            title: "Ссылки",
+            items: library.links,
+            emptyText: "В этом чате пока нет ссылок.",
+            isLinks: true
+        },
+        {
+            key: "documents",
+            title: "Документы",
+            items: library.documents,
+            emptyText: "В этом чате пока нет документов."
+        }
+    ];
+    el.mediaLibrarySubtitle.textContent = info.title;
+    el.mediaLibraryContent.innerHTML = `
+        <div class="library-tabs" role="tablist" aria-label="Разделы галереи">
+            ${sections
+                .map(
+                    (section, index) => `
+                        <button
+                            class="library-tab-btn ${index === 0 ? "is-active" : ""}"
+                            type="button"
+                            role="tab"
+                            data-library-tab="${esc(section.key)}"
+                        >
+                            ${esc(section.title)}
+                        </button>
+                    `
+                )
+                .join("")}
+        </div>
+        ${sections
+            .map((section, index) =>
+                renderLibrarySection(section, {
+                    active: index === 0
+                })
+            )
+            .join("")}
+    `;
     openModal("mediaLibraryModal");
 }
 
-function renderLibrarySection(title, items, emptyText, isLinks = false) {
+function renderLibrarySection(section, options = {}) {
+    const key = section && section.key ? section.key : "media";
+    const title = section && section.title ? section.title : "Раздел";
+    const items = Array.isArray(section && section.items) ? section.items : [];
+    const emptyText =
+        section && section.emptyText
+            ? section.emptyText
+            : "В этом разделе пока нет объектов.";
+    const isLinks = Boolean(section && section.isLinks);
+    const isGallery = Boolean(section && section.isGallery);
+    const active = options.active !== false;
+
     if (items.length === 0) {
         return `
-            <section class="library-section">
+            <section class="library-section ${active ? "" : "hidden"}" data-library-panel="${esc(key)}">
                 <h4>${esc(title)}</h4>
                 <p class="muted small">${esc(emptyText)}</p>
             </section>
         `;
     }
 
-    const listHtml = items
+    const itemHtml = items
         .map((item) => {
             const main = isLinks
                 ? `<a class="library-item-main link" href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${esc(item.label)}</a>`
                 : `<span class="library-item-main">${esc(item.label)}</span>`;
+            const itemClass = isGallery ? "library-item library-grid-item" : "library-item";
             return `
-                <li class="library-item">
+                <li class="${itemClass}">
                     ${main}
                     <div class="library-item-meta">${esc(item.meta)}</div>
                 </li>
             `;
         })
         .join("");
+    const listClass = isGallery ? "library-list library-grid" : "library-list";
 
     return `
-        <section class="library-section">
-            <h4>${esc(title)} (${items.length})</h4>
-            <ul class="library-list">${listHtml}</ul>
+        <section class="library-section ${active ? "" : "hidden"}" data-library-panel="${esc(key)}">
+            <h4>${esc(title)}</h4>
+            <ul class="${listClass}">${itemHtml}</ul>
         </section>
     `;
+}
+
+function onMediaLibraryContentClick(event) {
+    const tabButton = event.target.closest("[data-library-tab]");
+    if (!tabButton || !el.mediaLibraryContent || !el.mediaLibraryContent.contains(tabButton)) {
+        return;
+    }
+    const nextTab = tabButton.dataset.libraryTab || "";
+    if (!nextTab) {
+        return;
+    }
+    const tabButtons = Array.from(
+        el.mediaLibraryContent.querySelectorAll("[data-library-tab]")
+    );
+    tabButtons.forEach((buttonNode) => {
+        buttonNode.classList.toggle("is-active", buttonNode === tabButton);
+    });
+    const panels = Array.from(el.mediaLibraryContent.querySelectorAll("[data-library-panel]"));
+    panels.forEach((panelNode) => {
+        panelNode.classList.toggle(
+            "hidden",
+            panelNode.dataset.libraryPanel !== nextTab
+        );
+    });
 }
 
 function openModal(id) {
@@ -5154,6 +6686,7 @@ function createOrGetPrivateChat(userA, userB) {
     );
 
     if (existing) {
+        existing.archived = false;
         return existing;
     }
 
@@ -5178,6 +6711,8 @@ function createOrGetPrivateChat(userA, userB) {
         ],
         pinned: false,
         muted: false,
+        archived: false,
+        blockedBy: [],
         unreadCount: 1,
         updatedAt: Date.now()
     };
@@ -5247,6 +6782,8 @@ function ensureOnboardingChats(userId) {
         ],
         pinned: true,
         muted: false,
+        archived: false,
+        blockedBy: [],
         unreadCount: 0,
         updatedAt: Date.now() - 1000 * 60 * 6
     };
@@ -5279,6 +6816,8 @@ function ensureOnboardingChats(userId) {
         ],
         pinned: false,
         muted: false,
+        archived: false,
+        blockedBy: [],
         unreadCount: 2,
         updatedAt: Date.now() - 1000 * 60 * 3
     };
@@ -5362,7 +6901,10 @@ function getCurrentUserChats() {
     }
 
     return state.chats
-        .filter((chat) => chat.participants.includes(currentUser.id))
+        .filter(
+            (chat) =>
+                chat.participants.includes(currentUser.id) && !Boolean(chat.archived)
+        )
         .sort((a, b) => {
             if (a.pinned !== b.pinned) {
                 return a.pinned ? -1 : 1;
@@ -5386,7 +6928,36 @@ function getActiveChat() {
     if (!chat.participants.includes(currentUser.id)) {
         return null;
     }
+    if (Boolean(chat.archived)) {
+        return null;
+    }
     return chat;
+}
+
+function isChatBlockedForUser(chat, userId) {
+    if (!chat || !userId) {
+        return false;
+    }
+    return Array.isArray(chat.blockedBy) && chat.blockedBy.includes(userId);
+}
+
+function setChatBlockedForUser(chat, userId, blocked) {
+    if (!chat || !userId) {
+        return;
+    }
+    const current = Array.isArray(chat.blockedBy) ? chat.blockedBy : [];
+    const next = unique(current.filter(Boolean));
+    if (blocked) {
+        if (!next.includes(userId)) {
+            next.push(userId);
+        }
+    } else {
+        const index = next.indexOf(userId);
+        if (index >= 0) {
+            next.splice(index, 1);
+        }
+    }
+    chat.blockedBy = next;
 }
 
 function isCurrentChatAccessible() {
@@ -5424,11 +6995,17 @@ function getChatVisualInfo(chat) {
 }
 
 function getChatSubtitle(chat) {
+    const currentUser = getCurrentUser();
+    if (isChatBlockedForUser(chat, currentUser ? currentUser.id : "")) {
+        return "Чат заблокирован";
+    }
     if (chat.type === "group") {
         return `${chat.participants.length} участников`;
     }
+    if (!currentUser) {
+        return "Личный чат";
+    }
 
-    const currentUser = getCurrentUser();
     const otherId = chat.participants.find((id) => id !== currentUser.id);
     const otherUser = getUserById(otherId);
     if (!otherUser) {
@@ -5573,7 +7150,14 @@ function getMessagePreview(message) {
         return message.text;
     }
     if (message.attachments && message.attachments.length > 0) {
-        return "Вложение: " + message.attachments[0].name;
+        const firstAttachment = message.attachments[0];
+        if (isVoiceAttachment(firstAttachment)) {
+            const duration = Number(firstAttachment.durationSec || 0);
+            return duration > 0
+                ? `Голосовое (${formatVoiceDurationMs(duration)})`
+                : "Голосовое сообщение";
+        }
+        return "Вложение: " + firstAttachment.name;
     }
     return "Сообщение";
 }
@@ -5952,6 +7536,12 @@ function normalizeState(rawState) {
                 : [],
             pinned: Boolean(chat.pinned),
             muted: Boolean(chat.muted),
+            archived: Boolean(chat.archived),
+            blockedBy: unique(
+                (Array.isArray(chat.blockedBy) ? chat.blockedBy : [])
+                    .map((userId) => String(userId || "").trim())
+                    .filter(Boolean)
+            ),
             unreadCount: Number(chat.unreadCount || 0),
             updatedAt: chat.updatedAt || Date.now()
         })),
@@ -6068,4 +7658,3 @@ function uid(prefix) {
     return `${prefix}_${Date.now().toString(36)}_${Math.random()
         .toString(36)
         .slice(2, 8)}`;
-}
