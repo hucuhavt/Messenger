@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "revision": 20,
+  "users": [
+    {
+      "id": "u_mmpa0uk7_48zqbg",
+      "phone": "+79646231947",
+      "name": "анрп енор5",
+      "username": "5",
+      "about": "Новый пользователь Pulse",
+      "color": "#e63959",
+      "online": true,
+      "lastSeen": 1773429311671
+    },
+    {
+      "id": "u_support",
+      "phone": "+15550000001",
+      "name": "Pulse Assistant",
+      "username": "pulse_assistant",
+      "about": "Помощник платформы",
+      "color": "#1369ff",
+      "online": true,
+      "lastSeen": 1773428591671
+    },
+    {
+      "id": "u_aria",
+      "phone": "+15550000002",
+      "name": "Aria",
+      "username": "aria_design",
+      "about": "UX Designer",
+      "color": "#00b8b0",
+      "online": true,
+      "lastSeen": 1773428591672
+    },
+    {
+      "id": "u_niko",
+      "phone": "+15550000003",
+      "name": "Niko",
+      "username": "niko_pm",
+      "about": "Product Manager",
+      "color": "#f97316",
+      "online": false,
+      "lastSeen": 1773428591672
+    }
+  ],
+  "chats": [
+    {
+      "id": "c_mmpa0uk8_4eipun",
+      "type": "private",
+      "title": "",
+      "description": "Служебный чат",
+      "color": "#1369ff",
+      "participants": [
+        "u_mmpa0uk7_48zqbg",
+        "u_support"
+      ],
+      "adminIds": [
+        "u_support"
+      ],
+      "messages": [
+        {
+          "id": "m_mmpa0uk8_3afyrh",
+          "senderId": "u_support",
+          "text": "Добро пожаловать в Pulse! Здесь можно создавать чаты и группы.",
+          "attachments": [],
+          "reactions": {},
+          "createdAt": 1773428831672
+        },
+        {
+          "id": "m_mmpa0uk8_q1wgek",
+          "senderId": "u_support",
+          "text": "Подсказка: открой меню справа, чтобы управлять участниками группы.",
+          "attachments": [],
+          "reactions": {},
+          "createdAt": 1773428951672
+        },
+        {
+          "id": "m_mmpao1qf_fdyfij",
+          "senderId": "u_mmpa0uk7_48zqbg",
+          "text": "📞 Аудиозвонок • 00:06",
+          "attachments": [],
+          "reactions": {},
+          "createdAt": 1773430394055
+        }
+      ],
+      "pinned": true,
+      "muted": false,
+      "unreadCount": 0,
+      "updatedAt": 1773430394055
+    },
+    {
+      "id": "c_mmpa0uk8_2y3rzo",
+      "type": "group",
+      "title": "Launch Squad",
+      "description": "Подготовка нового релиза",
+      "color": "#0f766e",
+      "participants": [
+        "u_mmpa0uk7_48zqbg",
+        "u_aria",
+        "u_niko"
+      ],
+      "adminIds": [
+        "u_mmpa0uk7_48zqbg"
+      ],
+      "messages": [
+        {
+          "id": "m_mmpa0uk8_vt10un",
+          "senderId": "u_aria",
+          "text": "Я закинула новый дизайн экрана чатов. Проверьте, пожалуйста.",
+          "attachments": [
+            {
+              "id": "f_mmpa0uk8_tjr94j",
+              "name": "chat-redesign.fig",
+              "size": 0
+            }
+          ],
+          "reactions": {},
+          "createdAt": 1773429011672
+        },
+        {
+          "id": "m_mmpa0uk8_rzxmox",
+          "senderId": "u_niko",
+          "text": "Сегодня в 17:00 синк по фичам группы и уведомлений.",
+          "attachments": [],
+          "reactions": {},
+          "createdAt": 1773429131672
+        }
+      ],
+      "pinned": false,
+      "muted": false,
+      "unreadCount": 0,
+      "updatedAt": 1773429131672
+    }
+  ]
+}

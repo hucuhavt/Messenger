@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="ru">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Pulse Messenger</title>
+        <link rel="stylesheet" href="styles.css" />
+    </head>
+    <body>
+        <div id="appBackground"></div>
+
+        <section id="authScreen" class="auth-screen">
+            <button
+                id="authThemeToggleBtn"
+                class="icon-btn auth-theme-toggle"
+                type="button"
+                title="Переключить на тёмную тему"
+                aria-label="Переключить на тёмную тему"
+            >
+                ☾
+            </button>
+            <div class="brand-block">
+                <p class="eyebrow">Pulse Messenger</p>
+                <h1>Новый мессенджер для общения команды и друзей</h1>
+            </div>
+
+            <div class="auth-card">
+                <div class="auth-steps">
+                    <span class="step-dot is-active" data-step-dot="phone"></span>
+                    <span class="step-dot" data-step-dot="code"></span>
+                    <span class="step-dot" data-step-dot="profile"></span>
+                    <span class="step-dot" data-step-dot="username"></span>
+                </div>
+
+                <form id="phoneForm" class="auth-form is-active">
+                    <h2>Вход или регистрация</h2>
+                    <label class="field">
+                        <span>Выбор страны</span>
+                        <div id="countryCombobox" class="country-combobox">
+                            <input
+                                id="countrySearchInput"
+                                type="text"
+                                placeholder="Выбор страны"
+                                autocomplete="off"
+                            />
+                            <div
+                                id="countryOptionsMenu"
+                                class="country-options-menu hidden"
+                            ></div>
+                        </div>
+                        <select id="countrySelect" class="country-select-native"></select>
+                    </label>
+                    <div class="phone-grid">
+                        <label class="field">
+                            <span>Код страны</span>
+                            <input
+                                id="countryCodeInput"
+                                type="text"
+                                inputmode="numeric"
+                                placeholder="+1"
+                            />
+                        </label>
+                        <label class="field">
+                            <span>Номер телефона</span>
+                            <input
+                                id="phoneLocalInput"
+                                type="tel"
+                                inputmode="numeric"
+                                placeholder="5551234567"
+                                required
+                            />
+                        </label>
+                    </div>
+                    <p id="phoneStatusHint" class="muted small"></p>
+                    <label class="remember-row">
+                        <input id="rememberSessionCheckbox" type="checkbox" checked />
+                        <span>Не выходить из системы</span>
+                    </label>
+                    <button class="btn btn-primary" type="submit">
+                        Получить код
+                    </button>
+                </form>
+
+                <form id="codeForm" class="auth-form">
+                    <h2>Подтверждение номера</h2>
+                    <p id="codeHint" class="muted small"></p>
+                    <label class="field">
+                        <span>Код из SMS</span>
+                        <input
+                            id="codeInput"
+                            type="text"
+                            inputmode="numeric"
+                            maxlength="4"
+                            placeholder="1234"
+                            required
+                        />
+                    </label>
+                    <div class="auth-actions">
+                        <button
+                            class="btn btn-ghost"
+                            type="button"
+                            id="codeBackBtn"
+                        >
+                            Назад
+                        </button>
+                        <button class="btn btn-primary" type="submit">
+                            Подтвердить
+                        </button>
+                    </div>
+                </form>
+
+                <form id="profileForm" class="auth-form">
+                    <h2>Данные профиля</h2>
+                    <label class="field">
+                        <span>Имя</span>
+                        <input
+                            id="nameInput"
+                            type="text"
+                            placeholder="Ваше имя"
+                            required
+                        />
+                    </label>
+                    <label class="field">
+                        <span>Фамилия</span>
+                        <input
+                            id="lastNameInput"
+                            type="text"
+                            placeholder="Ваша фамилия"
+                            required
+                        />
+                    </label>
+                    <div class="auth-actions">
+                        <button
+                            class="btn btn-ghost"
+                            type="button"
+                            id="profileBackBtn"
+                        >
+                            Назад
+                        </button>
+                        <button class="btn btn-primary" type="submit">
+                            Далее
+                        </button>
+                    </div>
+                </form>
+
+                <form id="usernameForm" class="auth-form">
+                    <h2>Выберите username</h2>
+                    <label class="field">
+                        <span>Username</span>
+                        <input
+                            id="usernameInput"
+                            type="text"
+                            placeholder="username"
+                            required
+                        />
+                    </label>
+                    <div class="auth-actions">
+                        <button
+                            class="btn btn-ghost"
+                            type="button"
+                            id="usernameBackBtn"
+                        >
+                            Назад
+                        </button>
+                        <button class="btn btn-primary" type="submit">
+                            Создать профиль
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </section>
+
+        <section id="appScreen" class="app-screen hidden">
+            <header class="topbar">
+                <div class="topbar-left">
+                    <div class="brand-logo">Pulse</div>
+                </div>
+                <div class="topbar-right">
+                    <div id="currentUserCard" class="current-user-card top-user-card"></div>
+                </div>
+            </header>
+
+            <div id="layoutRoot" class="layout">
+                <aside id="sectionRail" class="section-rail">
+                    <button
+                        class="rail-btn is-active"
+                        type="button"
+                        data-section="chats"
+                        title="Чаты"
+                    >
+                        <span class="rail-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                                <path d="M4 5h16v10H9l-5 4z" />
+                            </svg>
+                        </span>
+                        <span class="rail-label">Чаты</span>
+                    </button>
+                    <button
+                        class="rail-btn"
+                        type="button"
+                        data-section="calls"
+                        title="Звонки"
+                    >
+                        <span class="rail-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                                <path
+                                    d="M7.7 5h2.6l1.2 3.5-2 1.5a14.6 14.6 0 0 0 4.5 4.5l1.5-2 3.5 1.2v2.6c0 .8-.7 1.5-1.6 1.5A13.4 13.4 0 0 1 6.2 6.6c0-.9.7-1.6 1.5-1.6z"
+                                />
+                            </svg>
+                        </span>
+                        <span class="rail-label">Звонки</span>
+                    </button>
+                    <button
+                        class="rail-btn"
+                        type="button"
+                        data-section="contacts"
+                        title="Контакты"
+                    >
+                        <span class="rail-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                                <circle cx="9" cy="9" r="3" />
+                                <path d="M4.5 18a4.5 4.5 0 0 1 9 0" />
+                                <circle cx="17" cy="10" r="2.2" />
+                                <path d="M14.6 18a3.6 3.6 0 0 1 3.9-3.4" />
+                            </svg>
+                        </span>
+                        <span class="rail-label">Контакты</span>
+                    </button>
+                    <button
+                        class="rail-btn"
+                        type="button"
+                        data-section="settings"
+                        title="Настройки"
+                    >
+                        <span class="rail-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="3.2" />
+                                <path
+                                    d="M19.4 15a1 1 0 0 0 .2 1.1l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1 1 0 0 0-1.1-.2 1 1 0 0 0-.6.9V20a2 2 0 1 1-4 0v-.2a1 1 0 0 0-.6-.9 1 1 0 0 0-1.1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1 1 0 0 0 .2-1.1 1 1 0 0 0-.9-.6H4a2 2 0 1 1 0-4h.2a1 1 0 0 0 .9-.6 1 1 0 0 0-.2-1.1l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1 1 0 0 0 1.1.2 1 1 0 0 0 .6-.9V4a2 2 0 1 1 4 0v.2a1 1 0 0 0 .6.9 1 1 0 0 0 1.1-.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1 1 0 0 0-.2 1.1 1 1 0 0 0 .9.6H20a2 2 0 1 1 0 4h-.2a1 1 0 0 0-.9.6z"
+                                />
+                            </svg>
+                        </span>
+                        <span class="rail-label">Настройки</span>
+                    </button>
+                </aside>
+                <aside class="sidebar">
+                    <div id="sidebarSearchHead" class="search-head">
+                        <label class="field search">
+                            <span id="sidebarSearchLabel">Поиск чатов</span>
+                            <input
+                                id="chatSearchInput"
+                                type="text"
+                                placeholder="Название, участник, сообщение"
+                            />
+                        </label>
+                        <div id="createChatWrap" class="create-chat-wrap">
+                            <button
+                                id="createMenuBtn"
+                                class="icon-btn add-btn"
+                                type="button"
+                                title="Создать"
+                            >
+                                +
+                            </button>
+                            <div id="createMenuPopover" class="create-menu hidden">
+                                <button
+                                    id="newChatBtn"
+                                    class="btn btn-soft full"
+                                    type="button"
+                                >
+                                    Новый чат
+                                </button>
+                                <button
+                                    id="newGroupBtn"
+                                    class="btn btn-soft full"
+                                    type="button"
+                                >
+                                    Новая группа
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    <div id="sidebarSectionTitle" class="section-title">Чаты</div>
+                    <ul id="chatList" class="chat-list"></ul>
+                </aside>
+
+                <main class="chat-main">
+                    <div id="emptyState" class="empty-state">
+                        <h2>Чат не выбран</h2>
+                        <p>
+                            Выберите чат слева или создайте новый через кнопку
+                            «+» рядом с поиском.
+                        </p>
+                    </div>
+
+                    <section id="chatSection" class="chat-section hidden">
+                        <header class="chat-header">
+                            <div class="chat-title-wrap">
+                                <button
+                                    id="mobileBackToChatsBtn"
+                                    class="mobile-chat-back"
+                                    type="button"
+                                    title="Назад"
+                                    aria-label="Назад к списку чатов"
+                                >
+                                    &lt;
+                                </button>
+                                <div id="chatHeaderAvatar" class="avatar"></div>
+                                <button
+                                    id="chatTitleTrigger"
+                                    class="chat-title-trigger"
+                                    type="button"
+                                >
+                                    <h2 id="chatHeaderTitle"></h2>
+                                    <p id="chatHeaderSubtitle" class="muted"></p>
+                                </button>
+                            </div>
+                            <div class="chat-header-actions">
+                                <button
+                                    id="audioCallBtn"
+                                    class="icon-btn"
+                                    type="button"
+                                    title="Аудиозвонок"
+                                    aria-label="Аудиозвонок"
+                                >
+                                    <svg class="chat-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path
+                                            d="M7.7 5h2.6l1.2 3.5-2 1.5a14.6 14.6 0 0 0 4.5 4.5l1.5-2 3.5 1.2v2.6c0 .8-.7 1.5-1.6 1.5A13.4 13.4 0 0 1 6.2 6.6c0-.9.7-1.6 1.5-1.6z"
+                                        />
+                                    </svg>
+                                </button>
+                                <button
+                                    id="videoCallBtn"
+                                    class="icon-btn"
+                                    type="button"
+                                    title="Видеозвонок"
+                                    aria-label="Видеозвонок"
+                                >
+                                    <svg class="chat-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <rect x="3.5" y="6.5" width="12" height="11" rx="2.2" />
+                                        <path d="M15.5 10.3 20.5 7.5v9l-5-2.8z" />
+                                    </svg>
+                                </button>
+                                <button
+                                    id="togglePinBtn"
+                                    class="icon-btn"
+                                    type="button"
+                                    title="Закрепить чат"
+                                    aria-label="Закрепить чат"
+                                >
+                                    <svg class="chat-action-icon" viewBox="0 0 24 24" aria-hidden="true">
+                                        <path d="M9 4h6l-1.2 4.2 2.4 2.3v1H7.8v-1l2.4-2.3z" />
+                                        <path d="M12 11.5V20" />
+                                    </svg>
+                                </button>
+                                <button
+                                    id="toggleMuteBtn"
+                                    class="icon-btn"
+                                    type="button"
+                                    title="Включить/выключить звук"
+                                    aria-label="Отключить уведомления"
+                                >
+                                    <svg
+                                        class="chat-action-icon icon-mute-on"
+                                        viewBox="0 0 24 24"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            d="M18 16.2V11a6 6 0 1 0-12 0v5.2l-1.6 1.6V19h15.2v-1.2z"
+                                        />
+                                        <path d="M9.5 19a2.5 2.5 0 0 0 5 0" />
+                                    </svg>
+                                    <svg
+                                        class="chat-action-icon icon-mute-off"
+                                        viewBox="0 0 24 24"
+                                        aria-hidden="true"
+                                    >
+                                        <path
+                                            d="M18 16.2V11a6 6 0 1 0-12 0v5.2l-1.6 1.6V19h15.2v-1.2z"
+                                        />
+                                        <path d="M9.5 19a2.5 2.5 0 0 0 5 0" />
+                                        <path d="M5 5 19 19" />
+                                    </svg>
+                                </button>
+                            </div>
+                        </header>
+
+                        <div class="message-tools">
+                            <label class="field search inline">
+                                <span>Поиск в сообщениях</span>
+                                <input
+                                    id="messageSearchInput"
+                                    type="text"
+                                    placeholder="Найти в текущем чате"
+                                />
+                            </label>
+                        </div>
+
+                        <div id="messagesContainer" class="messages"></div>
+                        <div id="messageEditHint" class="message-edit-hint hidden">
+                            <span id="messageEditHintText">Редактирование сообщения</span>
+                            <button
+                                id="cancelMessageEditBtn"
+                                class="message-edit-cancel"
+                                type="button"
+                                aria-label="Отменить редактирование"
+                            >
+                                ×
+                            </button>
+                        </div>
+
+                        <form id="messageForm" class="composer">
+                            <input
+                                id="fileInput"
+                                type="file"
+                                multiple
+                                class="hidden"
+                            />
+                            <button
+                                id="attachBtn"
+                                class="icon-btn"
+                                type="button"
+                                title="Прикрепить файл"
+                            >
+                                📎
+                            </button>
+                            <textarea
+                                id="messageInput"
+                                rows="1"
+                                placeholder="Введите сообщение..."
+                            ></textarea>
+                            <button id="sendMessageBtn" class="btn btn-primary" type="submit">
+                                Отправить
+                            </button>
+                        </form>
+                        <div id="attachmentList" class="attachment-list"></div>
+                    </section>
+                </main>
+
+                <aside id="infoPanel" class="info-panel">
+                    <div class="info-panel-header">
+                        <h3>Информация о чате</h3>
+                        <button
+                            id="closeInfoBtn"
+                            class="close-info-btn"
+                            type="button"
+                        >
+                            ×
+                        </button>
+                    </div>
+                    <div id="chatInfoCard" class="chat-info-card"></div>
+                    <div id="groupManageBlock" class="group-manage hidden">
+                        <h4>Участники</h4>
+                        <ul id="participantsList" class="participants-list"></ul>
+                        <label class="field">
+                            <span>Добавить участника</span>
+                            <select id="addParticipantSelect"></select>
+                        </label>
+                        <button
+                            id="addParticipantBtn"
+                            class="btn btn-soft full"
+                            type="button"
+                        >
+                            Добавить
+                        </button>
+                    </div>
+                </aside>
+            </div>
+        </section>
+
+        <div id="newChatModal" class="modal hidden">
+            <div class="modal-card">
+                <button class="close-btn" data-close-modal="newChatModal">
+                    ×
+                </button>
+                <h3>Новый личный чат</h3>
+                <label class="field">
+                    <span>Выбрать существующий контакт</span>
+                    <select id="existingContactSelect"></select>
+                </label>
+                <p class="muted small center">или</p>
+                <label class="field">
+                    <span>Имя нового контакта</span>
+                    <input
+                        id="newContactNameInput"
+                        type="text"
+                        placeholder="Например, Alex"
+                    />
+                </label>
+                <label class="field">
+                    <span>Телефон нового контакта</span>
+                    <input
+                        id="newContactPhoneInput"
+                        type="tel"
+                        placeholder="+1 555 000 00 00"
+                    />
+                </label>
+                <button id="createChatBtn" class="btn btn-primary full">
+                    Создать чат
+                </button>
+            </div>
+        </div>
+
+        <div id="newGroupModal" class="modal hidden">
+            <div class="modal-card">
+                <button class="close-btn" data-close-modal="newGroupModal">
+                    ×
+                </button>
+                <h3>Новая группа</h3>
+                <label class="field">
+                    <span>Название группы</span>
+                    <input
+                        id="groupNameInput"
+                        type="text"
+                        placeholder="Например, Product Team"
+                    />
+                </label>
+                <label class="field">
+                    <span>Описание</span>
+                    <input
+                        id="groupDescInput"
+                        type="text"
+                        placeholder="О чем эта группа"
+                    />
+                </label>
+                <div class="field">
+                    <span>Участники</span>
+                    <div id="groupMembersChecklist" class="checklist"></div>
+                </div>
+                <button id="createGroupBtn" class="btn btn-primary full">
+                    Создать группу
+                </button>
+            </div>
+        </div>
+
+        <div id="profileModal" class="modal hidden">
+            <div class="modal-card">
+                <button class="close-btn" data-close-modal="profileModal">
+                    ×
+                </button>
+                <h3>Редактирование профиля</h3>
+                <label class="field">
+                    <span>Имя</span>
+                    <input id="profileNameInput" type="text" />
+                </label>
+                <label class="field">
+                    <span>Username</span>
+                    <input id="profileUsernameInput" type="text" />
+                </label>
+                <label class="field">
+                    <span>О себе</span>
+                    <input
+                        id="profileAboutInput"
+                        type="text"
+                        placeholder="Например, Product designer"
+                    />
+                </label>
+                <label class="field">
+                    <span>Тема</span>
+                    <select id="profileThemeSelect">
+                        <option value="light">Светлая</option>
+                        <option value="dark">Тёмная</option>
+                    </select>
+                </label>
+                <button id="saveProfileBtn" class="btn btn-primary full">
+                    Сохранить
+                </button>
+                <div class="profile-extra-actions">
+                    <button id="logoutBtn" class="btn btn-ghost full" type="button">
+                        Выйти
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="mediaLibraryModal" class="modal hidden">
+            <div class="modal-card media-library-card">
+                <button class="close-btn" data-close-modal="mediaLibraryModal">
+                    ×
+                </button>
+                <h3>Медиа, документы, ссылки</h3>
+                <p id="mediaLibrarySubtitle" class="muted small"></p>
+                <div id="mediaLibraryContent" class="media-library-content"></div>
+            </div>
+        </div>
+
+        <div id="callModal" class="modal hidden">
+            <div class="modal-card call-modal-card">
+                <button class="close-btn" data-close-modal="callModal">×</button>
+                <h3 id="callModalTitle">Звонок</h3>
+                <p id="callModalStatus" class="muted small"></p>
+                <div id="callVisual" class="call-visual"></div>
+                <div id="callDuration" class="call-duration">00:00</div>
+                <div class="call-actions">
+                    <button
+                        id="toggleMicBtn"
+                        class="btn btn-soft"
+                        type="button"
+                    >
+                        🎤 Микрофон
+                    </button>
+                    <button
+                        id="toggleCameraBtn"
+                        class="btn btn-soft"
+                        type="button"
+                    >
+                        📷 Камера
+                    </button>
+                    <button id="endCallBtn" class="btn btn-danger" type="button">
+                        Завершить
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="forwardModal" class="modal hidden">
+            <div class="modal-card">
+                <button class="close-btn" data-close-modal="forwardModal">×</button>
+                <h3>Переслать сообщение</h3>
+                <p id="forwardMessagePreview" class="muted small"></p>
+                <label class="field">
+                    <span>Куда переслать</span>
+                    <select id="forwardChatSelect"></select>
+                </label>
+                <button id="forwardConfirmBtn" class="btn btn-primary full" type="button">
+                    Переслать
+                </button>
+            </div>
+        </div>
+
+        <div id="avatarCropModal" class="modal hidden">
+            <div class="modal-card avatar-crop-card">
+                <button class="close-btn" data-close-modal="avatarCropModal">×</button>
+                <h3>Обрезка фото</h3>
+                <p class="muted small">
+                    Перемещайте изображение и выберите круглую область аватарки.
+                </p>
+                <div id="avatarCropStage" class="avatar-crop-stage">
+                    <canvas id="avatarCropCanvas" class="avatar-crop-canvas"></canvas>
+                    <div class="avatar-crop-mask"></div>
+                </div>
+                <label class="field avatar-crop-zoom-field">
+                    <span>Масштаб</span>
+                    <input
+                        id="avatarCropZoomInput"
+                        type="range"
+                        min="100"
+                        max="400"
+                        value="100"
+                    />
+                </label>
+                <div class="avatar-crop-actions">
+                    <button class="btn btn-ghost" type="button" data-close-modal="avatarCropModal">
+                        Отмена
+                    </button>
+                    <button id="avatarCropApplyBtn" class="btn btn-primary" type="button">
+                        Применить
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div id="avatarPreviewModal" class="modal hidden">
+            <div class="modal-card avatar-preview-card">
+                <button class="close-btn" data-close-modal="avatarPreviewModal">×</button>
+                <h3>Фото профиля</h3>
+                <div class="avatar-preview-body">
+                    <img
+                        id="avatarPreviewImage"
+                        class="avatar-preview-image"
+                        src=""
+                        alt="Фото профиля"
+                    />
+                    <p id="avatarPreviewEmpty" class="muted small hidden">
+                        Фото профиля не выбрано.
+                    </p>
+                </div>
+                <button
+                    id="avatarPreviewDeleteBtn"
+                    class="btn btn-ghost full avatar-preview-delete-btn"
+                    type="button"
+                >
+                    🗑 Удалить фото
+                </button>
+            </div>
+        </div>
+
+        <div id="privacySettingsModal" class="modal hidden">
+            <div class="modal-card settings-modal-card">
+                <button class="close-btn" data-close-modal="privacySettingsModal">×</button>
+                <h3>Конфиденциальность</h3>
+                <section class="settings-section">
+                    <label class="settings-toggle-row">
+                        <input id="privacyHideOnlineModalInput" type="checkbox" />
+                        <span>Скрывать статус «в сети»</span>
+                    </label>
+                    <label class="settings-toggle-row">
+                        <input id="privacyHideLastSeenModalInput" type="checkbox" />
+                        <span>Скрывать время последнего посещения</span>
+                    </label>
+                    <label class="settings-toggle-row">
+                        <input id="privacyReadReceiptsModalInput" type="checkbox" />
+                        <span>Показывать подтверждения прочтения</span>
+                    </label>
+                </section>
+            </div>
+        </div>
+
+        <div id="powerSettingsModal" class="modal hidden">
+            <div class="modal-card settings-modal-card">
+                <button class="close-btn" data-close-modal="powerSettingsModal">×</button>
+                <h3>Энергосбережение</h3>
+                <section class="settings-section">
+                    <label class="settings-toggle-row">
+                        <input id="powerSavingModalInput" type="checkbox" />
+                        <span>Включить режим энергосбережения</span>
+                    </label>
+                    <p class="muted small">
+                        Режим снижает частоту фоновой синхронизации, отключает тяжёлые
+                        визуальные эффекты и фоновые изображения.
+                    </p>
+                </section>
+            </div>
+        </div>
+
+        <div id="appearanceSettingsModal" class="modal hidden">
+            <div class="modal-card settings-modal-card settings-modal-card-wide">
+                <button class="close-btn" data-close-modal="appearanceSettingsModal">×</button>
+                <h3>Оформление</h3>
+                <section class="settings-section">
+                    <div class="settings-color-grid">
+                        <label class="field settings-color-field">
+                            <span>Входящие сообщения</span>
+                            <input id="appearanceMsgInColorInput" type="color" />
+                        </label>
+                        <label class="field settings-color-field">
+                            <span>Исходящие сообщения</span>
+                            <input id="appearanceMsgOutColorInput" type="color" />
+                        </label>
+                        <label class="field settings-color-field">
+                            <span>Цвет текста</span>
+                            <input id="appearanceMsgTextColorInput" type="color" />
+                        </label>
+                    </div>
+                    <label class="field">
+                        <span>
+                            Размер текста сообщений:
+                            <strong id="appearanceMsgTextSizeValue">15px</strong>
+                        </span>
+                        <input
+                            id="appearanceMsgTextSizeInput"
+                            type="range"
+                            min="13"
+                            max="22"
+                            value="15"
+                        />
+                    </label>
+                    <label class="field">
+                        <span>Режим обоев чата</span>
+                        <select id="appearanceWallpaperModeInput">
+                            <option value="none">Без обоев</option>
+                            <option value="preset">Градиент из набора</option>
+                            <option value="color">Сплошной цвет</option>
+                            <option value="image">Собственное фото</option>
+                        </select>
+                    </label>
+                    <label class="field" data-appearance-control="preset">
+                        <span>Набор обоев</span>
+                        <select id="appearanceWallpaperPresetInput"></select>
+                    </label>
+                    <label class="field settings-color-field" data-appearance-control="color">
+                        <span>Цвет обоев</span>
+                        <input id="appearanceWallpaperColorInput" type="color" />
+                    </label>
+                    <div class="settings-wallpaper-file-row" data-appearance-control="image">
+                        <button
+                            class="btn btn-soft"
+                            type="button"
+                            data-appearance-action="pick-wallpaper"
+                        >
+                            Выбрать фото обоев
+                        </button>
+                        <button
+                            id="appearanceRemoveWallpaperBtn"
+                            class="btn btn-ghost"
+                            type="button"
+                            data-appearance-action="remove-wallpaper"
+                        >
+                            Удалить фото
+                        </button>
+                        <input
+                            id="appearanceWallpaperImageInput"
+                            type="file"
+                            accept="image/*"
+                            class="hidden"
+                        />
+                    </div>
+                    <p id="appearanceWallpaperStateText" class="muted small"></p>
+                </section>
+            </div>
+        </div>
+
+        <div id="messageActionMenu" class="message-action-menu hidden"></div>
+
+        <div id="toast" class="toast hidden"></div>
+
+        <script src="script.js"></script>
+    </body>
+</html>
